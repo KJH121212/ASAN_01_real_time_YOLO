@@ -1,0 +1,62 @@
+name: "biceps_curl"
+
+views:
+  # ----------------------------------------------------------------------
+  # [1] Diagonal (대각선) 뷰: 관절의 꺾임이 잘 보이므로 'angle' 방식 채택
+  # 평균 수축: 30.0° -> Threshold: 45.0° 이하
+  # 평균 이완: 170.5° -> Threshold: 155.5° 이상
+  # ----------------------------------------------------------------------
+  diagonal:
+    calc_method: "angle"
+    joints: 
+      left: [0, 2, 4]
+      right: [1, 3, 5]
+    state_machine:
+      start_state: "relax"
+      active_state: "flexion"
+      trigger_active: 
+        threshold: 80
+        operator: "<"
+      trigger_start: 
+        threshold: 140
+        operator: ">"
+
+  # ----------------------------------------------------------------------
+  # [2] Frontal (정면) 뷰: Z축 왜곡(Foreshortening) 극복을 위해 'y_distance' 방식 채택
+  # 평균 수축 거리: 0.114 -> Threshold: 0.264 이하 (어깨와 손목이 가까워짐)
+  # 평균 이완 거리: 0.976 -> Threshold: 0.826 이상 (어깨와 손목이 멀어짐)
+  # ----------------------------------------------------------------------
+  frontal:
+    calc_method: "y_distance"
+    joints: 
+      left: [0, 4]   # 왼쪽 어깨(0), 왼쪽 손목(4)
+      right: [1, 5]  # 오른쪽 어깨(1), 오른쪽 손목(5)
+    state_machine:
+      start_state: "relax"
+      active_state: "flexion"
+      trigger_active: 
+        threshold: 0.3
+        operator: "<"
+      trigger_start: 
+        threshold: 0.8
+        operator: ">"
+
+  # ----------------------------------------------------------------------
+  # [3] Lateral (측면) 뷰: 각도가 가장 완벽하게 투영되므로 'angle' 방식 채택
+  # 평균 수축: 34.6° -> Threshold: 49.6° 이하
+  # 평균 이완: 169.8° -> Threshold: 154.8° 이상
+  # ----------------------------------------------------------------------
+  lateral:
+    calc_method: "angle"
+    joints: 
+      left: [0, 2, 4]
+      right: [1, 3, 5]
+    state_machine:
+      start_state: "relax"
+      active_state: "flexion"
+      trigger_active: 
+        threshold: 80
+        operator: "<"
+      trigger_start: 
+        threshold: 150
+        operator: ">"
