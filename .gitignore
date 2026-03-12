@@ -1,1 +1,15 @@
+# PyTorch 모델 파일
 *.pt
+
+# 로컬 가상환경 폴더
+env/
+
+# 파이썬 실행 캐시 찌꺼기 파일들
+__pycache__/
+*.pyc
+
+# OpenVINO 모델 변환 폴더 (아까 변환을 시도하셨다면)
+*_openvino_model/
+
+# 나중에 API 키 등을 저장할 때 쓸 환경 변수 파일
+.env

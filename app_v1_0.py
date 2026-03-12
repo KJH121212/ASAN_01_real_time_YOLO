@@ -23,7 +23,7 @@ if 'exercise_logs' not in st.session_state:
         '운동명', '촬영각도', '왼손 횟수', '오른손 횟수', '시작 시간', '종료 시간', '소요 시간(초)'
     ])
 
-st.title("🏋️ AI 운동 히스토리 로그")
+st.title("Repetition Counter Prototype v1.3")
 
 # YAML 설정 로드
 all_configs = load_exercise_configs()

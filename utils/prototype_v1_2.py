@@ -55,7 +55,7 @@ def draw_centered_skeleton(canvas, norm_kps, body_edges, scale=110):
     return canvas
 
 def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
-    model = YOLO("yolo11n-pose.pt")
+    model = YOLO("./configs/checkpoints/yolo11n-pose.pt")
     counter = UniversalRepetitionCounter(ex_name, view_name)
     cap = cv2.VideoCapture(0)
     
@@ -100,16 +100,20 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
                 metrics, _ = counter.process_frame(calc_kps)
                 final_counts = counter.counts
 
+                # 1. 좌측 화면 실시간 뼈대 오버레이
                 for edge in BODY_EDGES:
                     p1, p2 = edge
                     c1, c2 = (int(smoothed_kps[p1][0]), int(smoothed_kps[p1][1])), (int(smoothed_kps[p2][0]), int(smoothed_kps[p2][1]))
                     cv2.line(left_display, c1, c2, (0, 255, 0), 2)
 
+                # 2. 우측 보드 중앙 정규화 뼈대 (골반 중심)
                 norm_canvas = np.zeros((300, 300, 3), dtype=np.uint8)
                 norm_canvas = draw_centered_skeleton(norm_canvas, calc_kps, BODY_EDGES)
                 right_board[120:420, (cam_w//2-150):(cam_w//2+150)] = norm_canvas
 
-        # 🌟 우측 보드 UI 구성
+        # ---------------------------------------------------------
+        # 🌟 우측 보드 UI 구성 (데이터 및 분석 표출)
+        # ---------------------------------------------------------
         cv2.putText(right_board, f"FPS: {fps:.1f}", (cam_w-100, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         y_count = 40
@@ -119,39 +123,60 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
             right_board = draw_korean_text(right_board, f"{side.upper()}: {c}/{target_reps}", (20, y_count), 30, color, bg_rect=True)
             y_count += 45
 
-        # 🌟 수정된 게이지 바 (Flexion 수축 시 위로 향하는 로직)
-        thresh = counter.sm_config.get('threshold', 0)
-        max_val = 180.0 if counter.calc_method == 'angle' else 1.0
+        # 🌟 YAML 기반 듀얼 임계값 게이지 바
+        t_active_dict = counter.sm_config.get('trigger_active', {})
+        t_start_dict = counter.sm_config.get('trigger_start', {})
         
+        t_active = t_active_dict.get('threshold', 80.0)
+        t_start = t_start_dict.get('threshold', 140.0)
+        operator = t_active_dict.get('operator', '<')
+
+        # 측정 방식에 따른 전체 스케일(범위) 설정
+        if counter.calc_method == 'angle':
+            val_top, val_bottom = 0.0, 180.0   # 각도: 0(완전수축) ~ 180(완전이완)
+        else:
+            val_top, val_bottom = 0.0, 1.2     # y_distance: 0.0(완전수축) ~ 1.2(이완)
+
         for i, side in enumerate(counter.sides):
             val = metrics.get(side, 0)
+            
             # 바 위치 설정 (우측 하단 배치)
             bx1 = cam_w - 70 - (i * 85)
             by1, bx2, by2 = cam_h - 280, bx1 + 40, cam_h - 60
             bar_height = by2 - by1
 
-            # 1. 배경 사각형
+            # 배경 사각형
             cv2.rectangle(right_board, (bx1, by1), (bx2, by2), (40, 40, 40), -1)
             
-            # 2. 🚀 핵심 수정: 수축(값이 작아짐)할수록 바가 위로 차오르게 매핑 반전
-            # [0, max_val] 입력 범위를 [bar_height, 0] 출력 범위로 뒤집음
-            # 결과: 0도(완전수축) -> bar_height(꽉 참), 180도(이완) -> 0(바닥)
-            fill_h = int(np.interp(val, [0, max_val], [bar_height, 0]))
+            # 실시간 데이터 바 높이 계산 (수축할수록 위로 차오르도록 반전 매핑)
+            fill_h = int(np.interp(val, [val_top, val_bottom], [bar_height, 0]))
             
-            # 3. 색상 결정 (수축 임계값보다 작아지면 수축 성공이므로 초록색)
-            # Biceps Curl은 operator가 "<" 이므로 val <= thresh일 때 목표 도달
-            f_color = (0, 255, 0) if val <= thresh else (0, 165, 255)
+            # 성공 색상 결정 (operator 기준)
+            if operator == '<':
+                f_color = (0, 255, 0) if val <= t_active else (0, 165, 255)
+            else:
+                f_color = (0, 255, 0) if val >= t_active else (0, 165, 255)
+            
             cv2.rectangle(right_board, (bx1, by2 - fill_h), (bx2, by2), f_color, -1)
 
-            # 4. Threshold(임계값) 가이드라인도 반전된 위치에 표시
-            ty = by2 - int(np.interp(thresh, [0, max_val], [bar_height, 0]))
-            cv2.line(right_board, (bx1 - 10, ty), (bx2 + 10, ty), (255, 255, 255), 2)
-            cv2.putText(right_board, "GOAL", (bx1 - 45, ty + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            # 🟢 FLEX(수축 목표) 가이드라인
+            ty_active = by2 - int(np.interp(t_active, [val_top, val_bottom], [bar_height, 0]))
+            cv2.line(right_board, (bx1 - 10, ty_active), (bx2 + 10, ty_active), (0, 255, 0), 2)
+            cv2.putText(right_board, "FLEX", (bx1 - 45, ty_active + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-            # 5. 현재 수치 텍스트 (바 상단)
+            # 🟡 RELAX(이완 목표) 가이드라인
+            ty_start = by2 - int(np.interp(t_start, [val_top, val_bottom], [bar_height, 0]))
+            cv2.line(right_board, (bx1 - 10, ty_start), (bx2 + 10, ty_start), (0, 200, 255), 2)
+            cv2.putText(right_board, "RELAX", (bx1 - 50, ty_start + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
+
+            # 실시간 수치 및 L/R 표시
             val_txt = f"{val:.1f}"
             right_board = draw_korean_text(right_board, val_txt, (bx1, by1 - 25), 15, (255, 255, 255))
             cv2.putText(right_board, side[0].upper(), (bx1 + 12, by2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # ---------------------------------------------------------
+        # 화면 병합 및 출력
+        # ---------------------------------------------------------
         combined = np.hstack((left_display, right_board))
         
         if not is_visible:

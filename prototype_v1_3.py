@@ -2,10 +2,10 @@ import cv2
 import time
 import numpy as np
 import sys
+import torch # 🌟 GPU 확인을 위해 torch 임포트 추가
 from pathlib import Path
 from datetime import datetime
 from ultralytics import YOLO
-from PIL import ImageFont, ImageDraw, Image
 
 # 경로 설정
 current_dir = Path(__file__).resolve().parent
@@ -23,38 +23,16 @@ BODY_EDGES = [
     (6, 8), (8, 10), (7, 9), (9, 11)        # 하체
 ]
 
-def draw_korean_text(img, text, position, font_size, color, bg_rect=False):
-    font_path = "C:/Windows/Fonts/malgun.ttf"
-    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(img_pil)
-    try:
-        font = ImageFont.truetype(font_path, font_size)
-    except:
-        font = ImageFont.load_default()
-    
-    if bg_rect:
-        bbox = draw.textbbox(position, text, font=font)
-        draw.rectangle([bbox[0]-5, bbox[1]-2, bbox[2]+5, bbox[3]+2], fill=(0, 0, 0, 150))
-
-    draw.text(position, text, font=font, fill=color)
-    return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-
-def draw_centered_skeleton(canvas, norm_kps, body_edges, scale=110):
-    h, w = canvas.shape[:2]
-    center_x = (norm_kps[6][0] + norm_kps[7][0]) / 2
-    center_y = (norm_kps[6][1] + norm_kps[7][1]) / 2
-    offset_x, offset_y = w // 2, h // 2
-
-    for edge in body_edges:
-        p1, p2 = edge
-        if p1 < len(norm_kps) and p2 < len(norm_kps):
-            x1, y1 = (norm_kps[p1][0] - center_x) * scale + offset_x, (norm_kps[p1][1] - center_y) * scale + offset_y
-            x2, y2 = (norm_kps[p2][0] - center_x) * scale + offset_x, (norm_kps[p2][1] - center_y) * scale + offset_y
-            cv2.line(canvas, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
-            cv2.circle(canvas, (int(x1), int(y1)), 4, (0, 0, 255), -1)
-    return canvas
-
 def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
+    # 🌟 GPU 자동 감지 로직 추가
+    if torch.cuda.is_available():
+        device_type = 0
+        gpu_name = torch.cuda.get_device_name(0)
+        print(f"\n🚀 [INFO] GPU가 감지되었습니다! ({gpu_name}) 모델을 GPU에 할당합니다.\n")
+    else:
+        device_type = 'cpu'
+        print("\n⚠️ [INFO] 사용 가능한 GPU가 없습니다. CPU로 구동합니다.\n")
+
     model = YOLO("./configs/checkpoints/yolo11n-pose.pt")
     counter = UniversalRepetitionCounter(ex_name, view_name)
     cap = cv2.VideoCapture(0)
@@ -66,6 +44,11 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
     start_time = None
     final_counts = {}
 
+    dash_w = max(cam_w // 3, 200) 
+
+    window_name = "AI Workout Analysis"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
@@ -73,9 +56,11 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
         fps = 1 / (time.time() - prev_time)
         prev_time = time.time()
 
-        results = model.predict(frame, conf=0.1, verbose=False)
+        # 🌟 판별한 device_type을 YOLO 추론 옵션에 적용
+        results = model.predict(frame, conf=0.1, verbose=False, imgsz=480, device=device_type)
         left_display = frame.copy()
-        right_board = np.zeros((cam_h, cam_w, 3), dtype=np.uint8)
+        
+        right_board = np.full((cam_h, dash_w, 3), 40, dtype=np.uint8) 
         
         is_visible, missing_hip = False, False
         metrics = {}
@@ -100,30 +85,40 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
                 metrics, _ = counter.process_frame(calc_kps)
                 final_counts = counter.counts
 
-                # 1. 좌측 화면 실시간 뼈대 오버레이
                 for edge in BODY_EDGES:
                     p1, p2 = edge
                     c1, c2 = (int(smoothed_kps[p1][0]), int(smoothed_kps[p1][1])), (int(smoothed_kps[p2][0]), int(smoothed_kps[p2][1]))
                     cv2.line(left_display, c1, c2, (0, 255, 0), 2)
 
-                # 2. 우측 보드 중앙 정규화 뼈대 (골반 중심)
-                norm_canvas = np.zeros((300, 300, 3), dtype=np.uint8)
-                norm_canvas = draw_centered_skeleton(norm_canvas, calc_kps, BODY_EDGES)
-                right_board[120:420, (cam_w//2-150):(cam_w//2+150)] = norm_canvas
-
         # ---------------------------------------------------------
-        # 🌟 우측 보드 UI 구성 (데이터 및 분석 표출)
+        # 우측 보드 UI 구성
         # ---------------------------------------------------------
-        cv2.putText(right_board, f"FPS: {fps:.1f}", (cam_w-100, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(right_board, f"FPS: {fps:.1f}", (dash_w - 100, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
         
-        y_count = 40
+        y_count = 100
         for side in counter.sides:
             c = counter.counts.get(side, 0)
             color = (0, 215, 255) if c >= target_reps else (0, 255, 0)
-            right_board = draw_korean_text(right_board, f"{side.upper()}: {c}/{target_reps}", (20, y_count), 30, color, bg_rect=True)
-            y_count += 45
+            text = f"{side.upper()}: {c} / {target_reps}"
+            
+            max_w = dash_w - 40 
+            font_scale = 1.5
+            thickness = 3
+            
+            while True:
+                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                if tw <= max_w or font_scale <= 0.5:
+                    break
+                font_scale -= 0.1
+                if font_scale < 1.0: 
+                    thickness = 2
+                    
+            cv2.putText(right_board, text, (20, y_count), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+            y_count += th + 50 
 
-        # 🌟 YAML 기반 듀얼 임계값 게이지 바
+        # ---------------------------------------------------------
+        # 게이지 바 설정
+        # ---------------------------------------------------------
         t_active_dict = counter.sm_config.get('trigger_active', {})
         t_start_dict = counter.sm_config.get('trigger_start', {})
         
@@ -131,27 +126,31 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
         t_start = t_start_dict.get('threshold', 140.0)
         operator = t_active_dict.get('operator', '<')
 
-        # 측정 방식에 따른 전체 스케일(범위) 설정
         if counter.calc_method == 'angle':
-            val_top, val_bottom = 0.0, 180.0   # 각도: 0(완전수축) ~ 180(완전이완)
+            val_top, val_bottom = 0.0, 180.0
         else:
-            val_top, val_bottom = 0.0, 1.2     # y_distance: 0.0(완전수축) ~ 1.2(이완)
+            val_top, val_bottom = 0.0, 1.2
 
         for i, side in enumerate(counter.sides):
             val = metrics.get(side, 0)
             
-            # 바 위치 설정 (우측 하단 배치)
-            bx1 = cam_w - 70 - (i * 85)
-            by1, bx2, by2 = cam_h - 280, bx1 + 40, cam_h - 60
+            bar_width = 30
+            spacing = 40
+            total_w = (len(counter.sides) * bar_width) + ((len(counter.sides) - 1) * spacing)
+            start_x = (dash_w - total_w) // 2
+            
+            bx1 = start_x + i * (bar_width + spacing)
+            bx2 = bx1 + bar_width
+            by1 = cam_h - 200
+            by2 = cam_h - 60
             bar_height = by2 - by1
 
-            # 배경 사각형
-            cv2.rectangle(right_board, (bx1, by1), (bx2, by2), (40, 40, 40), -1)
+            cv2.rectangle(right_board, (bx1, by1), (bx2, by2), (70, 70, 70), -1)
+            cv2.rectangle(right_board, (bx1, by1), (bx2, by2), (120, 120, 120), 1)
             
-            # 실시간 데이터 바 높이 계산 (수축할수록 위로 차오르도록 반전 매핑)
             fill_h = int(np.interp(val, [val_top, val_bottom], [bar_height, 0]))
+            fill_h = max(0, min(fill_h, bar_height)) 
             
-            # 성공 색상 결정 (operator 기준)
             if operator == '<':
                 f_color = (0, 255, 0) if val <= t_active else (0, 165, 255)
             else:
@@ -159,37 +158,32 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
             
             cv2.rectangle(right_board, (bx1, by2 - fill_h), (bx2, by2), f_color, -1)
 
-            # 🟢 FLEX(수축 목표) 가이드라인
             ty_active = by2 - int(np.interp(t_active, [val_top, val_bottom], [bar_height, 0]))
-            cv2.line(right_board, (bx1 - 10, ty_active), (bx2 + 10, ty_active), (0, 255, 0), 2)
-            cv2.putText(right_board, "FLEX", (bx1 - 45, ty_active + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+            cv2.line(right_board, (bx1 - 10, ty_active), (bx2 + 10, ty_active), (0, 255, 0), 1)
+            cv2.putText(right_board, "FLEX", (bx2 + 12, ty_active + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-            # 🟡 RELAX(이완 목표) 가이드라인
             ty_start = by2 - int(np.interp(t_start, [val_top, val_bottom], [bar_height, 0]))
-            cv2.line(right_board, (bx1 - 10, ty_start), (bx2 + 10, ty_start), (0, 200, 255), 2)
-            cv2.putText(right_board, "RELAX", (bx1 - 50, ty_start + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
+            cv2.line(right_board, (bx1 - 10, ty_start), (bx2 + 10, ty_start), (0, 200, 255), 1)
+            cv2.putText(right_board, "RELAX", (bx2 + 12, ty_start + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
 
-            # 실시간 수치 및 L/R 표시
-            val_txt = f"{val:.1f}"
-            right_board = draw_korean_text(right_board, val_txt, (bx1, by1 - 25), 15, (255, 255, 255))
-            cv2.putText(right_board, side[0].upper(), (bx1 + 12, by2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(right_board, f"{val:.1f}", (bx1 - 5, by1 - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(right_board, side[0].upper(), (bx1 + 8, by2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # ---------------------------------------------------------
-        # 화면 병합 및 출력
         # ---------------------------------------------------------
         combined = np.hstack((left_display, right_board))
         
         if not is_visible:
-            msg = "전신이 나오게 뒤로 물러나세요"
-            combined = draw_korean_text(combined, msg, (cam_w - 200, cam_h - 30), 20, (255, 0, 0), bg_rect=True)
+            cv2.rectangle(combined, (cam_w - 180, cam_h - 60), (cam_w - 20, cam_h - 20), (0, 0, 255), -1)
+            cv2.putText(combined, "STEP BACK", (cam_w - 160, cam_h - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         finished = all(counter.counts.get(s, 0) >= target_reps for s in counter.sides) if counter.sides else False
         if finished:
-            combined = draw_korean_text(combined, "MISSION COMPLETE!", (cam_w - 200, cam_h // 2), 40, (0, 255, 0), bg_rect=True)
-            cv2.imshow("AI Workout Analysis", combined)
+            cv2.rectangle(combined, (cam_w // 2 - 200, cam_h // 2 - 50), (cam_w // 2 + 200, cam_h // 2 + 30), (0, 255, 0), -1)
+            cv2.putText(combined, "MISSION COMPLETE!", (cam_w // 2 - 180, cam_h // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
+            cv2.imshow(window_name, combined)
             cv2.waitKey(3000); break
 
-        cv2.imshow("AI Workout Analysis", combined)
+        cv2.imshow(window_name, combined)
         if cv2.waitKey(1) & 0xFF == 27: break
 
     cap.release(); cv2.destroyAllWindows()
