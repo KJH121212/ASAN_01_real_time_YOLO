@@ -28,12 +28,12 @@ def run_counting(ex_name, view_name, target_reps, cam_w, cam_h):
     if torch.cuda.is_available():
         device_type = 0
         gpu_name = torch.cuda.get_device_name(0)
-        print(f"\n🚀 [INFO] GPU가 감지되었습니다! ({gpu_name}) 모델을 GPU에 할당합니다.\n")
+        print(f"\n[INFO] GPU가 감지되었습니다! ({gpu_name}) 모델을 GPU에 할당합니다.\n")
     else:
         device_type = 'cpu'
-        print("\n⚠️ [INFO] 사용 가능한 GPU가 없습니다. CPU로 구동합니다.\n")
+        print("\n[INFO] 사용 가능한 GPU가 없습니다. CPU로 구동합니다.\n")
 
-    model = YOLO("./configs/checkpoints/yolo11n-pose.pt")
+    model = YOLO("./configs/checkpoints/yolo11m-pose.pt")
     counter = UniversalRepetitionCounter(ex_name, view_name)
     cap = cv2.VideoCapture(0)
     

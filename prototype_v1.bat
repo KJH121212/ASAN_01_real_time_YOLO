@@ -1,35 +1,43 @@
 @echo off
 chcp 65001 >nul
 
-:: Set env path inside the project folder
+:: Set environment path
 set "ENV_DIR=%~dp0env"
+set "ACTIVATE_PATH=%ENV_DIR%\Scripts\activate.bat"
 
-:: If the env folder does not exist, create a new one and install
+:: If env exists but Scripts\activate.bat is missing, it's a "broken" environment
+IF EXIST "%ENV_DIR%" (
+    IF NOT EXIST "%ACTIVATE_PATH%" (
+        echo [WARNING] Broken environment detected. Deleting...
+        rmdir /s /q "%ENV_DIR%"
+    )
+)
+
+:: Create virtual environment if it doesn't exist
 IF NOT EXIST "%ENV_DIR%" (
     echo =======================================================
-    echo [INFO] No virtual environment found. Starting installation using Python's native venv.
+    echo [INFO] Creating new virtual environment...
     echo =======================================================
-    
-    :: Create virtual environment with Python's built-in venv
+    :: Using -m venv
     python -m venv "%ENV_DIR%"
-    
-    :: Activate virtual environment
-    call "%ENV_DIR%\Scripts\activate.bat"
-    
-    :: Install packages
-    echo [INFO] Installing packages from requirements.txt...
-    pip install --upgrade pip
-    pip install -r requirements.txt
-    
-    echo [INFO] Setup complete!
-) ELSE (
-    echo =======================================================
-    echo [INFO] Activating existing virtual environment.
-    echo =======================================================
-    
-    :: Activate virtual environment
-    call "%ENV_DIR%\Scripts\activate.bat"
 )
+
+:: Re-verify and Activate
+IF EXIST "%ACTIVATE_PATH%" (
+    echo [INFO] Activating virtual environment...
+    call "%ACTIVATE_PATH%"
+) ELSE (
+    echo [ERROR] Failed to create virtual environment. 
+    echo [TIP] Try running: conda deactivate
+    echo [TIP] Then run this script again.
+    pause
+    exit /b
+)
+
+:: Upgrade pip and install requirements
+echo [INFO] Syncing libraries with requirements.txt...
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
 :: Run app
 echo [INFO] Starting Streamlit app...
