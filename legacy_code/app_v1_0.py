@@ -12,7 +12,7 @@ if str(current_dir) not in sys.path:
     sys.path.append(str(current_dir))
 
 from utils.config_loader import load_exercise_configs
-from prototype_v1_3 import run_counting
+from legacy_code.prototype_v1_3 import run_counting
 from utils.camera import get_camera_resolution
 
 st.set_page_config(page_title="AI Exercise Counter", layout="wide")

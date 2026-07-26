@@ -1,5 +1,6 @@
 # PyTorch 모델 파일
 *.pt
+*.pth
 
 # 로컬 가상환경 폴더
 env/
