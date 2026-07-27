@@ -1,66 +1,63 @@
 @echo off
 chcp 65001 >nul
+title Setup RTM Environment
 
 set ENV_NAME=rtm_env
-set CONDA_ENV_DIR=C:\Users\jihu6\anaconda3\envs\%ENV_NAME%
-set PYTHON_CMD=%CONDA_ENV_DIR%\python.exe
 
 echo =======================================================
-echo [1/5] Removing existing environment (%ENV_NAME%)...
+echo [1/3] Checking Conda availability...
 echo =======================================================
-if exist "%CONDA_ENV_DIR%" (
-    call conda env remove -n %ENV_NAME% -y
+call conda --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Conda is not recognized in CMD/PowerShell.
+    echo Please run this script inside Anaconda Prompt.
+    pause
+    exit /b 1
 )
 
 echo.
 echo =======================================================
-echo [2/5] Creating Python 3.10 environment...
+echo [2/3] Creating Python 3.10 environment (%ENV_NAME%)...
 echo =======================================================
 call conda create -n %ENV_NAME% python=3.10 -y
-if errorlevel 1 goto ERROR_EXIT
+if errorlevel 1 (
+    echo [ERROR] Failed to create conda environment.
+    pause
+    exit /b 1
+)
 
 echo.
 echo =======================================================
-echo [3/5] Installing PyTorch 2.1.2 (CUDA 12.1)...
+echo [3/3] Installing dependencies from requirements.txt...
 echo =======================================================
-"%PYTHON_CMD%" -m pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
-if errorlevel 1 goto ERROR_EXIT
+if not exist "requirements.txt" (
+    echo [ERROR] requirements.txt file not found in current directory!
+    pause
+    exit /b 1
+)
 
-echo.
-echo =======================================================
-echo [4/5] Installing MMCV 2.1.0 and OpenMMLab Core...
-echo =======================================================
-"%PYTHON_CMD%" -m pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html
-if errorlevel 1 goto ERROR_EXIT
-
-"%PYTHON_CMD%" -m pip install mmengine "mmdet>=3.1.0" "mmpose>=1.3.0"
-if errorlevel 1 goto ERROR_EXIT
-
-echo.
-echo =======================================================
-echo [5/5] Locking NumPy 1.x and OpenCV 4.x...
-echo =======================================================
-"%PYTHON_CMD%" -m pip install "numpy==1.26.4" "setuptools<70.0.0" "opencv-python<4.10.0" pycocotools ultralytics streamlit
-if errorlevel 1 goto ERROR_EXIT
+call conda run -n %ENV_NAME% pip install -r requirements.txt
+if errorlevel 1 (
+    echo [ERROR] Failed to install requirements.
+    pause
+    exit /b 1
+)
 
 echo.
 echo =======================================================
 echo VERIFYING ENVIRONMENT...
 echo =======================================================
-"%PYTHON_CMD%" -c "import torch, numpy, mmcv; print('PyTorch:', torch.__version__, '| NumPy:', numpy.__version__, '| MMCV:', mmcv.__version__)"
-if errorlevel 1 goto ERROR_EXIT
+call conda run -n %ENV_NAME% python -c "import torch, numpy, mmcv, mmpose; print('PyTorch:', torch.__version__, '| NumPy:', numpy.__version__, '| MMCV:', mmcv.__version__, '| MMPose:', mmpose.__version__)"
+if errorlevel 1 (
+    echo [WARNING] Verification script failed. Please check installation logs above.
+    pause
+    exit /b 1
+)
 
 echo.
 echo =======================================================
 echo [SUCCESS] Environment setup complete!
+echo To activate environment: conda activate %ENV_NAME%
 echo =======================================================
 pause
 exit /b 0
-
-:ERROR_EXIT
-echo.
-echo =======================================================
-echo [ERROR] Setup failed! Check the output above.
-echo =======================================================
-pause
-exit /b 1
