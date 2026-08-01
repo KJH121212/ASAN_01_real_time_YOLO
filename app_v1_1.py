@@ -1,3 +1,29 @@
+import sys
+import torch
+import cv2
+import os
+from unittest.mock import MagicMock
+from importlib.machinery import ModuleSpec
+
+# 🌟 [CPU 폭주 방지] CPU 쓰레드 수를 2개로 제한
+torch.set_num_threads(2)
+cv2.setNumThreads(2)
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+
+# 🌟 [CRITICAL FIX 1] Device Guard 및 mmcv-lite 환경용 C++ 모듈 스펙 모킹
+mock_ext = MagicMock()
+mock_ext.__spec__ = ModuleSpec("mmcv._ext", None)
+sys.modules['mmcv._ext'] = mock_ext
+
+# 🌟 [CRITICAL FIX 2] PyTorch 2.6+ weights_only=True 기본값 변경 우회
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
 import streamlit as st
 import pandas as pd
 import sys
@@ -13,7 +39,7 @@ if str(current_dir) not in sys.path:
 
 from utils.config_loader import load_exercise_configs
 # 🌟 [수정] legacy_code 패키지 제거 및 로컬 prototype_v1_3 연동
-from prototype_v1_4 import run_counting
+from prototype_v2 import run_counting
 from utils.camera import get_camera_resolution
 
 st.set_page_config(page_title="AI Exercise Counter", layout="wide")

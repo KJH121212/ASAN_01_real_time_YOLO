@@ -28,6 +28,10 @@ echo =======================================================
 call conda run -n %ENV_NAME% mim install mmengine
 call conda run -n %ENV_NAME% pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html "numpy<2.0.0"
 call conda run -n %ENV_NAME% mim install "mmdet==3.2.0"
+
+call conda run -n %ENV_NAME% pip install "chumpy==0.70" --no-build-isolation
+if errorlevel 1 goto ERROR_EXIT
+
 call conda run -n %ENV_NAME% mim install "mmpose==1.3.2"
 if errorlevel 1 goto ERROR_EXIT
 
@@ -35,7 +39,7 @@ echo.
 echo =======================================================
 echo [4/4] Installing Remaining Dependencies (Locking NumPy < 2.0.0)
 echo =======================================================
-call conda run -n %ENV_NAME% pip install "opencv-python<4.10.0" ultralytics==8.3.204 streamlit==1.55.0 pycocotools xtcocotools chumpy==0.70 pandas matplotlib scipy shapely PyYAML requests pillow tqdm click rich "numpy<2.0.0"
+call conda run -n %ENV_NAME% pip install "opencv-python<4.10.0" ultralytics==8.3.204 streamlit==1.55.0 pycocotools xtcocotools pandas matplotlib scipy shapely PyYAML requests pillow tqdm click rich "numpy<2.0.0"
 if errorlevel 1 goto ERROR_EXIT
 
 echo.
