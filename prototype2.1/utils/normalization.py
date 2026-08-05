@@ -26,15 +26,9 @@ def normalize_realtime_12kpts(kpts_12):
         
     return norm_kpts
 
-# utils/normalization.py
-import numpy as np
-
 
 def normalize_pelvis_centered(keypoints: list) -> list:
-  """골반 중점을 (0, 0) 원점으로 설정하고,
-
-  어깨 중점과 골반 중점 간 거리를 1.0으로 정규화
-  """
+  """관절 감지 상태에 따라 원점과 스케일을 가변 변환하는 계층적 정규화 함수"""
   if not keypoints or len(keypoints) < 17:
     return keypoints
 
@@ -42,28 +36,54 @@ def normalize_pelvis_centered(keypoints: list) -> list:
       kp["id"]: (kp["x"], kp["y"], kp.get("score", 0.0)) for kp in keypoints
   }
 
-  # 필수 관절 존재 여부 확인 (어깨: 5,6 / 골반: 11,12)
-  required_ids = [5, 6, 11, 12]
-  if not all(i in kpt_map for i in required_ids):
+  CONF_THRES = 0.35  # 관절 인식 신뢰도 임계값
+
+  # 필수 관절 인식 여부 검사
+  has_hips = (
+      kpt_map.get(11, (0, 0, 0))[2] > CONF_THRES
+      and kpt_map.get(12, (0, 0, 0))[2] > CONF_THRES
+  )
+  has_shoulders = (
+      kpt_map.get(5, (0, 0, 0))[2] > CONF_THRES
+      and kpt_map.get(6, (0, 0, 0))[2] > CONF_THRES
+  )
+
+  origin_x, origin_y = 0.0, 0.0
+  scale = 1.0
+
+  # [1순위] 골반과 어깨가 모두 잘 보일 때 (골반 중심 + 상체 길이 스케일)
+  if has_hips and has_shoulders:
+    hip_x = (kpt_map[11][0] + kpt_map[12][0]) / 2.0
+    hip_y = (kpt_map[11][1] + kpt_map[12][1]) / 2.0
+    sh_x = (kpt_map[5][0] + kpt_map[6][0]) / 2.0
+    sh_y = (kpt_map[5][1] + kpt_map[6][1]) / 2.0
+
+    origin_x, origin_y = hip_x, hip_y
+    scale = np.sqrt((sh_x - hip_x) ** 2 + (sh_y - hip_y) ** 2)
+
+  # [2순위] 하체가 가려지고 상체만 보일 때 (어깨 중심 + 어깨 폭 스케일)
+  elif has_shoulders:
+    sh_x = (kpt_map[5][0] + kpt_map[6][0]) / 2.0
+    sh_y = (kpt_map[5][1] + kpt_map[6][1]) / 2.0
+
+    origin_x, origin_y = sh_x, sh_y
+    scale = np.sqrt(
+        (kpt_map[5][0] - kpt_map[6][0]) ** 2
+        + (kpt_map[5][1] - kpt_map[6][1]) ** 2
+    )
+
+  # [3순위] 주요 관절 모두 미감지 시 원본 유지
+  else:
     return keypoints
 
-  # 1. 골반 중점 (원점)
-  hip_x = (kpt_map[11][0] + kpt_map[12][0]) / 2.0
-  hip_y = (kpt_map[11][1] + kpt_map[12][1]) / 2.0
-
-  # 2. 어깨 중점 및 상체 스케일(S)
-  sh_x = (kpt_map[5][0] + kpt_map[6][0]) / 2.0
-  sh_y = (kpt_map[5][1] + kpt_map[6][1]) / 2.0
-
-  scale = np.sqrt((sh_x - hip_x) ** 2 + (sh_y - hip_y) ** 2)
   if scale < 1e-6:
     scale = 1.0
 
-  # 3. 좌표 변환
+  # 좌표 변환 진행
   normalized = []
   for kp in keypoints:
-    norm_x = (kp["x"] - hip_x) / scale
-    norm_y = (kp["y"] - hip_y) / scale
+    norm_x = (kp["x"] - origin_x) / scale
+    norm_y = (kp["y"] - origin_y) / scale
     normalized.append({
         "id": kp["id"],
         "x": round(float(norm_x), 4),
