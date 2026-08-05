@@ -14,3 +14,6 @@ __pycache__/
 
 # 나중에 API 키 등을 저장할 때 쓸 환경 변수 파일
 .env
+
+# data 통제
+data/

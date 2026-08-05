@@ -1,7 +1,6 @@
 @echo off
 chcp 65001 >nul
 
-:: [수정 1] RTX 50 전용 가상환경 이름 지정
 set ENV_NAME=rtm_env_50
 
 echo =======================================================
@@ -14,25 +13,24 @@ if errorlevel 1 goto ERROR_EXIT
 
 echo.
 echo =======================================================
-echo [2/4] Installing PyTorch (CUDA 12.8 for RTX 50 Series) + NumPy 1.26.4
+echo [2/4] Installing PyTorch (CUDA 12.8 for RTX 50 Series sm_120)
 echo =======================================================
-call conda run -n %ENV_NAME% python -m pip install "numpy==1.26.4" "setuptools<70.0.0" openmim
+call conda run -n %ENV_NAME% python -m pip install "numpy==1.26.4" "setuptools<70.0.0"
 if errorlevel 1 goto ERROR_EXIT
 
-:: RTX 5060(sm_120) 지원 PyTorch cu128 설치
+:: RTX 5060(Blackwell) sm_120 아키텍처 연산 지원을 위해 cu128 PyTorch 설치
 call conda run -n %ENV_NAME% python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 goto ERROR_EXIT
 
 echo.
 echo =======================================================
-echo [3/4] Installing OpenMMLab (Bypassing Device Guard mim.exe)
+echo [3/4] Installing OpenMMLab Packages
 echo =======================================================
-:: [수정 2] mim.exe 차단을 피하기 위해 python -m pip 방식으로 통일
-call conda run -n %ENV_NAME% python -m pip install mmengine
+call conda run -n %ENV_NAME% python -m pip install "mmengine>=0.8.0"
 if errorlevel 1 goto ERROR_EXIT
 
-:: [수정 3] C++ DLL 오류 방지 및 mmdet 충돌 방지를 위해 mmcv-lite 지정
-call conda run -n %ENV_NAME% python -m pip install "mmcv-lite>=2.0.0rc4,<2.2.0"
+:: OpenMMLab MMCV 설치
+call conda run -n %ENV_NAME% python -m pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1/index.html
 if errorlevel 1 goto ERROR_EXIT
 
 call conda run -n %ENV_NAME% python -m pip install "mmdet==3.2.0"
@@ -46,18 +44,17 @@ if errorlevel 1 goto ERROR_EXIT
 
 echo.
 echo =======================================================
-echo [4/4] Installing Remaining Dependencies (Locking NumPy < 2.0.0)
+echo [4/4] Installing Remaining Dependencies
 echo =======================================================
-call conda run -n %ENV_NAME% python -m pip install "opencv-python<4.10.0" ultralytics==8.3.204 streamlit==1.55.0 pycocotools xtcocotools pandas matplotlib scipy shapely PyYAML requests pillow tqdm click rich "numpy<2.0.0"
-call conda run -n %ENV_NAME% python -m pip install "websockets"
+call conda run -n %ENV_NAME% python -m pip install "opencv-python<4.10.0" ultralytics==8.3.204 streamlit==1.55.0 pycocotools xtcocotools pandas matplotlib scipy shapely PyYAML requests pillow tqdm click rich "numpy<2.0.0" websockets
 if errorlevel 1 goto ERROR_EXIT
 
 echo.
 echo =======================================================
-echo VERIFYING ENVIRONMENT...
+echo VERIFYING ENVIRONMENT AND GPU TENSOR COMPUTATION...
 echo =======================================================
-:: RTX 5060 GPU 인식 상태 확인 출력 추가
-call conda run -n %ENV_NAME% python -c "import torch, numpy, mmcv, mmpose; print('PyTorch:', torch.__version__, '| CUDA Available:', torch.cuda.is_available(), '| GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU', '| MMCV:', mmcv.__version__, '| MMPose:', mmpose.__version__)"
+:: GPU 텐서 연산(sm_120 지원 여부)과 MMCV 로딩 동시 검증
+call conda run -n %ENV_NAME% python -c "import torch, mmcv, mmpose; x = torch.randn(2, 3).cuda(); print('PyTorch:', torch.__version__, '| GPU:', torch.cuda.get_device_name(0)); print('GPU Tensor Calc Test:', (x+x).sum().item()); print('MMCV:', mmcv.__version__, '| MMPose:', mmpose.__version__)"
 if errorlevel 1 goto ERROR_EXIT
 
 echo.
