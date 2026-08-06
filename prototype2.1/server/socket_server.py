@@ -4,12 +4,16 @@ from datetime import datetime
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 from unittest.mock import MagicMock
+import warnings
 import cv2
 import torch
 import websockets
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 mock_ext = MagicMock()
 mock_ext.__spec__ = MagicMock()
@@ -44,6 +48,44 @@ from core.motion_engine import MotionEngine
 from core.skeleton_engine import SkeletonEngine
 
 
+# --- 1. 카메라 버퍼 쌓임 방지를 위한 전용 스레드 클래스 ---
+class ThreadedCamera:
+
+  def __init__(self, camera_index=0):
+    self.camera_index = camera_index
+    self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    self.grabbed, self.frame = self.cap.read()
+    self.started = False
+    self.read_lock = threading.Lock()
+
+  def start(self):
+    if self.started:
+      return self
+    self.started = True
+    self.thread = threading.Thread(target=self.update, daemon=True)
+    self.thread.start()
+    return self
+
+  def update(self):
+    while self.started:
+      grabbed, frame = self.cap.read()
+      with self.read_lock:
+        self.grabbed = grabbed
+        self.frame = frame
+
+  def read(self):
+    with self.read_lock:
+      if not self.grabbed or self.frame is None:
+        return False, None
+      return True, self.frame.copy()
+
+  def stop(self):
+    self.started = False
+    if self.cap and self.cap.isOpened():
+      self.cap.release()
+
+
 class ExerciseSocketServer:
 
   def __init__(self, host="127.0.0.1", port=8080):
@@ -53,8 +95,7 @@ class ExerciseSocketServer:
     print("[SocketServer] SkeletonEngine AI 모델 로드 중...")
     self.skeleton_engine = SkeletonEngine(yolo_interval=3)
 
-    self.cap = None
-    self.camera_index = 0
+    self.camera = None
     self.active_session = False
 
     self.data_manager = None
@@ -69,26 +110,15 @@ class ExerciseSocketServer:
     self.buf_values = []
     self.buf_keypoints = []
 
-    self.target_fps = 30
-    self.frame_delay = 1.0 / self.target_fps
-
   def start_camera(self, camera_index: int = 0):
-    if self.cap is not None and self.camera_index != camera_index:
+    if self.camera:
       self.stop_camera()
-
-    if self.cap is None or not self.cap.isOpened():
-      self.camera_index = camera_index
-      self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-      self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-      if not self.cap.isOpened():
-        self.camera_index = 0
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    self.camera = ThreadedCamera(camera_index).start()
 
   def stop_camera(self):
-    if self.cap and self.cap.isOpened():
-      self.cap.release()
-      self.cap = None
+    if self.camera:
+      self.camera.stop()
+      self.camera = None
 
   def init_session(
       self,
@@ -105,10 +135,7 @@ class ExerciseSocketServer:
     self.target_reps = target_reps
     self.session_start_time = time.time()
 
-    self.buf_timestamps = []
-    self.buf_values = []
-    self.buf_keypoints = []
-
+    self.buf_timestamps, self.buf_values, self.buf_keypoints = [], [], []
     self.start_camera(camera_index)
     self.data_manager = DataManager(
         player_id=player_id, patient_name=patient_name
@@ -135,12 +162,10 @@ class ExerciseSocketServer:
     left_reps = self.motion_engine.fsm_left.completed_reps_history
     right_reps = self.motion_engine.fsm_right.completed_reps_history
 
-    all_rep_rows = []
-    for r in left_reps + right_reps:
-      row_copy = r.copy()
-      row_copy["session_id"] = session_id
-      row_copy["timestamp"] = timestamp_str
-      all_rep_rows.append(row_copy)
+    all_rep_rows = [
+        {**r, "session_id": session_id, "timestamp": timestamp_str}
+        for r in left_reps + right_reps
+    ]
 
     self.data_manager.save_rep_details_csv(all_rep_rows)
     self.data_manager.save_trajectory_npz(
@@ -160,11 +185,11 @@ class ExerciseSocketServer:
   async def handle_client(self, websocket):
     print(f"[SocketServer] 클라이언트 접속: {websocket.remote_address}")
     prev_time = time.time()
+    frame_count = 0
+    last_frame_b64 = None
 
     try:
       while True:
-        loop_start = time.time()
-
         try:
           message = await asyncio.wait_for(websocket.recv(), timeout=0.001)
           data = json.loads(message)
@@ -180,11 +205,10 @@ class ExerciseSocketServer:
         except asyncio.TimeoutError:
           pass
 
-        if self.active_session and self.cap and self.cap.isOpened():
-          ret, frame = self.cap.read()
-          frame_b64 = None
+        if self.active_session and self.camera:
+          ret, frame = self.camera.read()
 
-          if ret:
+          if ret and frame is not None:
             curr_time = time.time()
             fps = (
                 round(1.0 / (curr_time - prev_time), 1)
@@ -192,13 +216,21 @@ class ExerciseSocketServer:
                 else 30.0
             )
             prev_time = curr_time
+            frame_count += 1
 
-            small_frame = cv2.resize(frame, (480, 360))
-            _, img_buffer = cv2.imencode(
-                ".jpg", small_frame, [cv2.IMWRITE_JPEG_QUALITY, 40]
-            )
-            frame_b64 = base64.b64encode(img_buffer).decode("utf-8")
+            # --- 2. Base64 이미지 스킵 전송 (2프레임당 1회만 인코딩하여 CPU 지연 최소화) ---
+            if frame_count % 2 == 0:
 
+              def encode_jpg(img):
+                small = cv2.resize(img, (400, 300))
+                _, buf = cv2.imencode(
+                    ".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 30]
+                )
+                return base64.b64encode(buf).decode("utf-8")
+
+              last_frame_b64 = await asyncio.to_thread(encode_jpg, frame)
+
+            # --- 3. AI 추론 연산 ---
             keypoints = await asyncio.to_thread(
                 self.skeleton_engine.extract_keypoints, frame
             )
@@ -228,8 +260,7 @@ class ExerciseSocketServer:
               result = self.motion_engine.process_keypoints(keypoints)
               if result:
                 current_mode = result["mode"]
-                left_data = result["left"]
-                right_data = result["right"]
+                left_data, right_data = result["left"], result["right"]
 
                 if result["mode"] == "MAIN":
                   kpt_matrix = [
@@ -266,7 +297,7 @@ class ExerciseSocketServer:
                 "keypoints": keypoints if yolo_detected else [],
                 "fps": fps,
                 "yolo_detected": yolo_detected,
-                "frame_b64": frame_b64,
+                "frame_b64": last_frame_b64,
             }
             await websocket.send(json.dumps(payload))
 
@@ -284,8 +315,8 @@ class ExerciseSocketServer:
                   )
                 self.active_session = False
 
-        elapsed = time.time() - loop_start
-        await asyncio.sleep(max(0.001, self.frame_delay - elapsed))
+        # Sleep을 최소화하여 프레임 즉시 처리
+        await asyncio.sleep(0.001)
 
     except websockets.exceptions.ConnectionClosed:
       print("[SocketServer] 클라이언트 연결 종료")

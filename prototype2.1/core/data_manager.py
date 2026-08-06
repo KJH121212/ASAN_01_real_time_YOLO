@@ -27,16 +27,18 @@ def load_exercise_config(exercise_name: str) -> dict:
     except Exception as e:
       print(f"[DataManager Warning] 설정 로드 실패: {e}")
 
+  # JSON 로드 실패 시 사용하는 기본 Fallback 설정 (RELATIVE_Y 지원)
   return {
       "exercise_name": exercise_name,
       "eval_config": {
-          "metric_type": "ANGLE",
+          "metric_type": "RELATIVE_Y",
           "motion_direction": "DECREASING",
-          "primary_kpts": {"left": [5, 7, 9], "right": [6, 8, 10]},
+          "target_kpt": {"left": 9, "right": 10},
+          "base_kpt": {"left": 11, "right": 12},
       },
       "default_thresholds": {
-          "left": {"start_val": 160.0, "target_val": 50.0},
-          "right": {"start_val": 160.0, "target_val": 50.0},
+          "left": {"start_val": 0.8, "target_val": -0.3},
+          "right": {"start_val": 0.8, "target_val": -0.3},
       },
   }
 
@@ -134,7 +136,7 @@ class DataManager:
 
     file_exists = self.csv_path.exists()
     with open(self.csv_path, "a", newline="", encoding="utf-8-sig") as f:
-      writer = csv.DictWriter(f, fieldnames=fieldnames)
+      writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
       if not file_exists:
         writer.writeheader()
       for row in rep_rows:
