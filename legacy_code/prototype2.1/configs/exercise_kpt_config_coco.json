@@ -1,0 +1,173 @@
+{
+  "version": "2.2.0",
+  "exercises": {
+    "biceps_curl": {
+      "exercise_name": "biceps_curl",
+      "display_name_kr": "이두 굴곡 (Biceps Curl)",
+      "eval_config": {
+        "metric_type": "RELATIVE_Y",
+        "motion_direction": "DECREASING",
+        "target_kpt": { "left": 9, "right": 10 },
+        "base_kpt": { "left": 11, "right": 12 }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 0.2, "target_val": -1.2 },
+        "right": { "start_val": 0.2, "target_val": -1.2 }
+      }
+    },
+    "shoulder_press": {
+      "exercise_name": "shoulder_press",
+      "display_name_kr": "숄더 프레스 (Shoulder Press)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "INCREASING",
+        "primary_kpts": {
+          "left": [5, 7, 9],
+          "right": [6 ,8, 10]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 15.0, "target_val": 160.0 },
+        "right": { "start_val": 15.0, "target_val": 160.0 }
+      }
+    },
+    "shoulder_abduction": {
+      "exercise_name": "shoulder_abduction",
+      "display_name_kr": "견관절 외전 (Shoulder Abduction)",
+      "eval_config": {
+        "metric_type": "RELATIVE_Y",
+        "motion_direction": "DECREASING",
+        "target_kpt": { "left": 9, "right": 10 },
+        "base_kpt": { "left": 11, "right": 12 }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 0.8, "target_val": -1.2 },
+        "right": { "start_val": 0.8, "target_val": -1.2 }
+      }
+    },
+    "slr": {
+      "exercise_name": "slr",
+      "display_name_kr": "하지 직거상 (Straight Leg Raise)",
+      "eval_config": {
+        "metric_type": "RELATIVE_Y",
+        "motion_direction": "DECREASING",
+        "target_kpt": { "left": 15, "right": 16 },
+        "base_kpt": { "left": 11, "right": 12 }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 1.2, "target_val": 0.2 },
+        "right": { "start_val": 1.2, "target_val": 0.2 }
+      }
+    },
+    "sitting_hip_flexion": {
+      "exercise_name": "sitting_hip_flexion",
+      "display_name_kr": "좌식 고관절 굴곡 (Sitting Hip Flexion)",
+      "eval_config": {
+        "metric_type": "RELATIVE_Y",
+        "motion_direction": "DECREASING",
+        "target_kpt": { "left": 13, "right": 14 },
+        "base_kpt": { "left": 11, "right": 12 }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 0.8, "target_val": 0.1 },
+        "right": { "start_val": 0.8, "target_val": 0.1 }
+      }
+    },
+    "bridge_dynamic": {
+      "exercise_name": "bridge_dynamic",
+      "display_name_kr": "동적 브릿지 (Dynamic Bridge)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "INCREASING",
+        "primary_kpts": {
+          "left": [5, 11, 13],
+          "right": [6, 12, 14]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 120.0, "target_val": 170.0 },
+        "right": { "start_val": 120.0, "target_val": 170.0 }
+      }
+    },
+    "clamshell": {
+      "exercise_name": "clamshell",
+      "display_name_kr": "클램쉘 (Clamshell)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "INCREASING",
+        "primary_kpts": {
+          "left": [11, 13, 15],
+          "right": [12, 14, 16]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 30.0, "target_val": 80.0 },
+        "right": { "start_val": 30.0, "target_val": 80.0 }
+      }
+    },
+    "hip_knee_flexion": {
+      "exercise_name": "hip_knee_flexion",
+      "display_name_kr": "고관절 및 슬관절 굴곡 (Hip & Knee Flexion)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "DECREASING",
+        "primary_kpts": {
+          "left": [11, 13, 15],
+          "right": [12, 14, 16]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 170.0, "target_val": 70.0 },
+        "right": { "start_val": 170.0, "target_val": 70.0 }
+      }
+    },
+    "knee_extension": {
+      "exercise_name": "knee_extension",
+      "display_name_kr": "슬관절 신전 (Knee Extension)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "INCREASING",
+        "primary_kpts": {
+          "left": [11, 13, 15],
+          "right": [12, 14, 16]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 90.0, "target_val": 170.0 },
+        "right": { "start_val": 90.0, "target_val": 170.0 }
+      }
+    },
+    "leg_cycle_exercise": {
+      "exercise_name": "leg_cycle_exercise",
+      "display_name_kr": "하지 사이클 운동 (Leg Cycle)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "DECREASING",
+        "primary_kpts": {
+          "left": [11, 13, 15],
+          "right": [12, 14, 16]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 160.0, "target_val": 80.0 },
+        "right": { "start_val": 160.0, "target_val": 80.0 }
+      }
+    },
+    "shoulder_horizontal_abduction": {
+      "exercise_name": "shoulder_horizontal_abduction",
+      "display_name_kr": "견관절 수평 외전 (Horizontal Abduction)",
+      "eval_config": {
+        "metric_type": "ANGLE",
+        "motion_direction": "INCREASING",
+        "primary_kpts": {
+          "left": [11, 5, 7],
+          "right": [12, 6, 8]
+        }
+      },
+      "default_thresholds": {
+        "left": { "start_val": 30.0, "target_val": 120.0 },
+        "right": { "start_val": 30.0, "target_val": 120.0 }
+      }
+    }
+  }
+}

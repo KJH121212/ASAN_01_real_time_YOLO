@@ -122,9 +122,9 @@ class SkeletonEngine:
                 "score": round(float(score), 3)
             })
 
-        # 골반 중점 (0,0) 원점 및 상체 길이 1.0 기준 재정규화 적용
-        if len(keypoints) == 17:
-            keypoints = normalize_pelvis_centered(keypoints)
+        # # 골반 중점 (0,0) 원점 및 상체 길이 1.0 기준 재정규화 적용
+        # if len(keypoints) == 17:
+        #     keypoints = normalize_pelvis_centered(keypoints)
 
         return keypoints
 

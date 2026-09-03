@@ -42,8 +42,13 @@ with col1:
       [0, 1, 2],
       format_func=lambda x: f"카메라 {x}번 (기본웹캠: 0)",
   )
-  target_reps = st.number_input(
+  
+  col_c1, col_c2 = st.columns(2)
+  target_reps = col_c1.number_input(
       "실제 운동 목표 횟수", min_value=1, max_value=50, value=10
+  )
+  cal_time = col_c2.number_input(
+      "캘리브레이션 추적 시간 (초)", min_value=3, max_value=30, value=5
   )
 
   st.markdown("---")
@@ -51,7 +56,7 @@ with col1:
   col_btn1, col_btn2 = st.columns(2)
 
   if col_btn1.button(
-      "시범 동작 측정 (3회)", type="primary", use_container_width=True
+      "시범 동작 측정 시작", type="primary", use_container_width=True
   ):
     cmd = [
         sys.executable,
@@ -68,9 +73,11 @@ with col1:
         "3",
         "--camera_index",
         str(camera_index),
+        "--cal_time",
+        str(cal_time),
     ]
     subprocess.Popen(cmd)
-    st.info(f"시범 동작 창이 열렸습니다. (카메라 {camera_index}번)")
+    st.info(f"시범 동작 창이 열렸습니다. (카메라 {camera_index}번, 추적 시간 {cal_time}초)")
 
   if col_btn2.button("실제 운동 측정 시작", use_container_width=True):
     cmd = [
