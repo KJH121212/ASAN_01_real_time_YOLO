@@ -1,74 +1,105 @@
-import numpy as np
+# ==============================================================================
+# [Module Information]
+# File: utils/normalization.py
+# Description: Torso-scaled isotropic normalization centering the pelvis at (0, 0)
+#              with Cartesian Y-axis inversion (Upward is positive).
+# ==============================================================================
 
-def normalize_realtime_12kpts(kpts_12):
-    """
-   의 normalize_skeleton_array 로직을 실시간 프레임용으로 이식
-    - kpts_12: 얼굴이 제거된 (12, 3) 형태의 넘파이 배열
-    """
-    norm_kpts = kpts_12.copy().astype(float)
-    
-    # 모든 값이 0이면 (인식 실패) 그대로 반환
-    if np.all(norm_kpts == 0):
-        return norm_kpts
-    
-    # 1. 중앙점 계산: 골반 중심 (6번, 7번 중점)
-    # cropped_kps 기준: 6(왼쪽 골반), 7(오른쪽 골반)
-    hip_center = (norm_kpts[6, :2] + norm_kpts[7, :2]) / 2.0
-    
-    # 2. 기준 거리 계산: 몸통 길이 (어깨 중점과 골반 중점 사이 거리)
-    # cropped_kps 기준: 0(왼쪽 어깨), 1(오른쪽 어깨)
-    shoulder_center = (norm_kpts[0, :2] + norm_kpts[1, :2]) / 2.0
-    torso_length = np.linalg.norm(shoulder_center - hip_center)
-    
-    # 3. 정규화 실행: 모든 좌표에서 hip_center를 빼고 torso_length로 나눔
-    if torso_length > 1e-6:
-        norm_kpts[:, :2] = (norm_kpts[:, :2] - hip_center) / torso_length
-        
-    return norm_kpts
-
-# utils/normalization.py
 import numpy as np
 
 
-def normalize_pelvis_centered(keypoints: list) -> list:
-  """골반 중점을 (0, 0) 원점으로 설정하고,
+class PoseNormalizer:
+    """
+    골반 중심을 (0, 0)으로 설정하고 몸통(어깨-골반 거리) 길이를 1.0으로 스케일링하는
+    등방성(Isotropic) 2D 포즈 정규화 클래스.
+    """
 
-  어깨 중점과 골반 중점 간 거리를 1.0으로 정규화
-  """
-  if not keypoints or len(keypoints) < 17:
-    return keypoints
+    # COCO 관절 인덱스 정의
+    LEFT_SHOULDER = 5
+    RIGHT_SHOULDER = 6
+    LEFT_HIP = 11
+    RIGHT_HIP = 12
 
-  kpt_map = {
-      kp["id"]: (kp["x"], kp["y"], kp.get("score", 0.0)) for kp in keypoints
-  }
+    def __init__(self, conf_threshold: float = 0.35, invert_y: bool = True):
+        """
+        Args:
+            conf_threshold: 기준 관절(골반/어깨)의 최소 감지 신뢰도 임계값
+            invert_y: True일 경우 이미지의 하향 Y축을 데카르트 상향(+Y)으로 반전
+        """
+        self.conf_threshold = conf_threshold
+        self.invert_y = invert_y
+        print(f"[DEBUG][NORM_INIT] PoseNormalizer configured. ConfThresh: {self.conf_threshold}, InvertY: {self.invert_y}")
 
-  # 필수 관절 존재 여부 확인 (어깨: 5,6 / 골반: 11,12)
-  required_ids = [5, 6, 11, 12]
-  if not all(i in kpt_map for i in required_ids):
-    return keypoints
+    def normalize(self, keypoints: list) -> list:
+        """
+        17개 관절 딕셔너리 리스트를 받아 신체 중심 정규화 좌표계로 변환합니다.
 
-  # 1. 골반 중점 (원점)
-  hip_x = (kpt_map[11][0] + kpt_map[12][0]) / 2.0
-  hip_y = (kpt_map[11][1] + kpt_map[12][1]) / 2.0
+        Args:
+            keypoints: [{'id': int, 'x': float, 'y': float, 'score': float}, ...]
+        Returns:
+            list: 정규화된 관절 좌표 딕셔너리 리스트 (변환 불가 시 None 반환)
+        """
+        if not keypoints or len(keypoints) < 17:
+            print("[WARN][NORM] Input keypoints list is empty or invalid. Skipping normalization.")
+            return None
 
-  # 2. 어깨 중점 및 상체 스케일(S)
-  sh_x = (kpt_map[5][0] + kpt_map[6][0]) / 2.0
-  sh_y = (kpt_map[5][1] + kpt_map[6][1]) / 2.0
+        # 고속 벡터 연산을 위해 NumPy 배열로 변환: Shape (17, 3) -> [x, y, score]
+        kpt_matrix = np.array(
+            [[kp["x"], kp["y"], kp.get("score", 0.0)] for kp in keypoints],
+            dtype=np.float32
+        )
+        coords = kpt_matrix[:, :2]
+        scores = kpt_matrix[:, 2]
 
-  scale = np.sqrt((sh_x - hip_x) ** 2 + (sh_y - hip_y) ** 2)
-  if scale < 1e-6:
-    scale = 1.0
+        # 필수 기준 관절 유효 감지 여부 검증
+        has_hips = (scores[self.LEFT_HIP] >= self.conf_threshold and scores[self.RIGHT_HIP] >= self.conf_threshold)
+        has_shoulders = (scores[self.LEFT_SHOULDER] >= self.conf_threshold and scores[self.RIGHT_SHOULDER] >= self.conf_threshold)
 
-  # 3. 좌표 변환
-  normalized = []
-  for kp in keypoints:
-    norm_x = (kp["x"] - hip_x) / scale
-    norm_y = (kp["y"] - hip_y) / scale
-    normalized.append({
-        "id": kp["id"],
-        "x": round(float(norm_x), 4),
-        "y": round(float(norm_y), 4),
-        "score": kp.get("score", 0.0),
-    })
+        if not has_hips:
+            # 골반이 가려진 경우 정규화 기준 원점을 확정할 수 없으므로 무효 처리
+            print(f"[WARN][NORM] Pelvis keypoints occluded. Left Hip Score: {scores[self.LEFT_HIP]:.2f}, Right Hip Score: {scores[self.RIGHT_HIP]:.2f}")
+            return None
 
-  return normalized
+        # 1. 골반 중심 원점(Origin) 계산
+        hip_center = (coords[self.LEFT_HIP] + coords[self.RIGHT_HIP]) / 2.0
+
+        # 2. 몸통 길이(Torso Length) 척도 계산
+        if has_shoulders:
+            shoulder_center = (coords[self.LEFT_SHOULDER] + coords[self.RIGHT_SHOULDER]) / 2.0
+            torso_length = float(np.linalg.norm(shoulder_center - hip_center))
+        else:
+            # 어깨 결측 시 좌우 골반 너비를 기반으로 몸통 길이 대체 추정 (인체 비율 약 1.5배 보정)
+            hip_width = float(np.linalg.norm(coords[self.LEFT_HIP] - coords[self.RIGHT_HIP]))
+            torso_length = hip_width * 1.5
+            print(f"[DEBUG][NORM] Shoulders missing. Estimated torso length from hip width: {torso_length:.4f}")
+
+        # 0으로 나누기 방어
+        if torso_length < 1e-4:
+            print("[WARN][NORM] Measured scale factor is near zero. Falling back to 1.0.")
+            torso_length = 1.0
+
+        # 3. 원점 평행이동 및 등방성 스케일링 수행
+        norm_coords = (coords - hip_center) / torso_length
+
+        # 4. 데카르트 좌표계 보정 (위쪽이 양수가 되도록 Y축 반전)
+        if self.invert_y:
+            norm_coords[:, 1] = -norm_coords[:, 1]
+
+        # 5. 기존 파이프라인과 완벽 호환되는 딕셔너리 구조체로 복원
+        normalized_list = []
+        for i in range(17):
+            normalized_list.append({
+                "id": i,
+                "x": round(float(norm_coords[i, 0]), 4),
+                "y": round(float(norm_coords[i, 1]), 4),
+                "score": round(float(scores[i]), 3)
+            })
+
+        print(f"[DEBUG][NORM] Pelvis Center: ({hip_center[0]:.3f}, {hip_center[1]:.3f}), Torso Length: {torso_length:.3f}")
+        return normalized_list
+
+
+# 함수형 인터페이스 호환용 래퍼
+def normalize_pelvis_centered(keypoints: list, invert_y: bool = True) -> list:
+    normalizer = PoseNormalizer(invert_y=invert_y)
+    return normalizer.normalize(keypoints)

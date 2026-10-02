@@ -8,6 +8,7 @@ env/
 # 파이썬 실행 캐시 찌꺼기 파일들
 __pycache__/
 *.pyc
+.vscode/
 
 # OpenVINO 모델 변환 폴더 (아까 변환을 시도하셨다면)
 *_openvino_model/

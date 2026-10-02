@@ -2,7 +2,7 @@
 chcp 65001 >nul
 
 :: [수정 1] RTX 50 전용 가상환경 이름 지정
-set ENV_NAME=rtm_env_50
+set ENV_NAME=rtm_env
 
 echo =======================================================
 echo [1/4] Conda environment setup (Python 3.10)
@@ -60,7 +60,7 @@ echo =======================================================
 call conda run -n %ENV_NAME% python -c "import torch, numpy, mmcv, mmpose; print('PyTorch:', torch.__version__, '| CUDA Available:', torch.cuda.is_available(), '| GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU', '| MMCV:', mmcv.__version__, '| MMPose:', mmpose.__version__)"
 if errorlevel 1 goto ERROR_EXIT
 
-echo.
+echo. 
 echo =======================================================
 echo [SUCCESS] Environment setup completed successfully!
 echo =======================================================
