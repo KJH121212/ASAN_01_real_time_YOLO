@@ -6,13 +6,13 @@
       "display_name_kr": "이두 굴곡 (Biceps Curl)",
       "eval_config": {
         "metric_type": "RELATIVE_Y",
-        "motion_direction": "DECREASING",
+        "motion_direction": "INCREASING",
         "target_kpt": { "left": 9, "right": 10 },
         "base_kpt": { "left": 11, "right": 12 }
       },
       "default_thresholds": {
-        "left": { "start_val": 0.2, "target_val": -1.2 },
-        "right": { "start_val": 0.2, "target_val": -1.2 }
+        "left": { "start_val": 0.1, "target_val": 0.9 },
+        "right": { "start_val": 0.1, "target_val": 0.9 }
       }
     },
     "shoulder_press": {

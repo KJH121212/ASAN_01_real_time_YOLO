@@ -17,92 +17,125 @@ import math  # 삼각함수 연산 및 아크코사인 결과를 각도(Degree)�
 import numpy as np  # 벡터 생성, 다차원 배열 연산 및 내적 계산을 위한 NumPy 라이브러리 로드
 
 
-class SideFSM:  # 좌측 또는 우측 단일 측면의 운동 진행 상태를 추적하는 상태 머신 클래스
+class SideFSM:
+    def __init__(self, side_name: str, motion_direction: str, thresholds: dict, target_reps: int = 10):
+        self.side = side_name
+        self.is_decreasing = (motion_direction == "DECREASING")
+        self.target_reps = target_reps
 
-    def __init__(self, side_name: str, motion_direction: str, thresholds: dict, target_reps: int = 10):  # 상태 머신 초기화 생성자
-        self.side = side_name  # 현재 객체가 담당하는 신체 측면 명칭 ("left" 또는 "right") 저장
-        self.is_decreasing = (motion_direction == "DECREASING")  # 운동 진행 시 수치가 감소하는 형태인지 논리값으로 저장
-        self.target_reps = target_reps  # 현재 세션에서 달성해야 할 목표 반복 횟수 저장
+        self.state = "READY"
+        self.rep_count = 0
+        self.peak_reached = False
 
-        self.state = "READY"  # FSM의 초기 상태를 동작 준비 완료인 "READY" 상태로 지정
-        self.rep_count = 0  # 성공적으로 수행한 누적 운동 횟수를 0으로 초기화
-        self.peak_reached = False  # 1회차 운동 중 유효한 최대 가동 지점에 도달했는지 확인하는 플래그 초기화
+        # 기본 임계값 안전 마진 할당
+        self.start_val = thresholds.get("start_val", 0.15 if not self.is_decreasing else 0.80)
+        self.target_val = thresholds.get("target_val", 0.80 if not self.is_decreasing else 0.15)
 
-        self.start_val = thresholds.get("start_val", 160.0 if self.is_decreasing else 90.0)  # JSON 설정 기반 동작 시작점 임계값 할당
-        self.target_val = thresholds.get("target_val", 50.0 if self.is_decreasing else 160.0)  # JSON 설정 기반 동작 목표점 임계값 할당
+        self.min_val_recorded = 999.0
+        self.max_val_recorded = -999.0
+        self.last_quality = "READY"
+        self.completed_reps_history = []
 
-        self.min_val_recorded = 999.0  # 단일 회차 내 가장 작게 측정된 수치를 추적하기 위해 무한대 값으로 초기화
-        self.max_val_recorded = -999.0  # 단일 회차 내 가장 크게 측정된 수치를 추적하기 위해 음의 무한대 값으로 초기화
-        self.last_quality = "READY"  # 사용자 화면에 표시할 직전 회차의 수행 품질 문자열 초기화
+    def evaluate_quality(self, peak_val: float) -> str:
+        total_range = abs(self.target_val - self.start_val)
+        if total_range == 0:
+            return "GOOD"
 
-        self.completed_reps_history = []  # 성공적으로 완료된 회차들의 상세 측정 기록(ROM 등)을 누적할 빈 리스트 할당
+        achieved_range = abs(peak_val - self.start_val)
+        ratio = achieved_range / total_range
 
-    def evaluate_quality(self, peak_val: float) -> str:  # 달성된 극값(Peak)을 바탕으로 운동 수행 품질을 4단계로 분류하는 메서드
-        total_range = abs(self.target_val - self.start_val)  # 환자에게 요구되는 전체 목표 가동 범위 크기 산출
-        if total_range == 0:  # 설정 오류 등으로 목표 가동 범위가 0이 되어 분모가 0이 되는 상황 예외 처리
-            return "GOOD"  # 시스템 크래시를 방지하기 위해 기본 유효 등급 반환
+        if ratio >= 0.70:
+            return "PERFECT"
+        elif ratio >= 0.50:
+            return "GOOD"
+        elif ratio >= 0.30:
+            return "BAD"
+        else:
+            return "INVALID"
 
-        achieved_range = abs(peak_val - self.start_val)  # 시작점으로부터 환자가 실제로 도달한 가동 범위 크기 산출
-        ratio = achieved_range / total_range  # 목표치 대비 환자의 실제 달성 비율 계산
+    def update(self, current_val: float) -> dict:
+        if self.rep_count >= self.target_reps:
+            self.state = "WAITING"
+            return {
+                "state": "WAITING",
+                "rep_count": self.rep_count,
+                "progress_ratio": 1.0,
+                "quality": "FINISHED",
+                "is_count_updated": False
+            }
 
-        if ratio >= 0.80:  # 달성 비율이 80% 이상인 훌륭한 수행일 경우
-            return "PERFECT"  # 최우수 품질 등급 문자열 반환
-        elif ratio >= 0.60:  # 달성 비율이 60% 이상인 양호한 수행일 경우
-            return "GOOD"  # 우수 품질 등급 문자열 반환
-        elif ratio >= 0.40:  # 달성 비율이 40% 이상인 다소 부족한 수행일 경우
-            return "BAD"  # 미흡 품질 등급 문자열 반환
-        else:  # 달성 비율이 40% 미만으로 움직임이 거의 없는 경우
-            return "INVALID"  # 카운트를 인정하지 않는 무효 등급 반환
+        if current_val is None:
+            return {
+                "state": self.state,
+                "rep_count": self.rep_count,
+                "progress_ratio": 0.0,
+                "quality": self.last_quality,
+                "is_count_updated": False
+            }
 
-    def update(self, current_val: float) -> dict:  # 매 프레임마다 산출된 최신 관절 수치를 받아 상태를 전이하는 메서드
-        if self.rep_count >= self.target_reps:  # 현재 성공 횟수가 목표 횟수에 이미 도달한 경우
-            self.state = "WAITING"  # 추가적인 횟수 증가를 막고 대기 상태로 고정
-            return {"state": "WAITING", "rep_count": self.rep_count, "progress_ratio": 1.0, "quality": "FINISHED", "is_count_updated": False}  # 100% 완료 상태 패킷 반환
+        self.min_val_recorded = min(self.min_val_recorded, current_val)
+        self.max_val_recorded = max(self.max_val_recorded, current_val)
 
-        if current_val is None:  # 카메라 화면을 벗어나는 등 관절 수치가 입력되지 않은 결측 상황일 경우
-            return {"state": self.state, "rep_count": self.rep_count, "progress_ratio": 0.0, "quality": self.last_quality, "is_count_updated": False}  # 기존 상태와 횟수를 그대로 유지하여 반환
+        val_range = abs(self.target_val - self.start_val)
+        if val_range > 0:
+            # 게이지 바와 동일하게 시작점 기준 절대 이동 비율 산출
+            progress_ratio = float(np.clip(abs(current_val - self.start_val) / val_range, 0.0, 1.0))
+        else:
+            progress_ratio = 0.0
 
-        self.min_val_recorded = min(self.min_val_recorded, current_val)  # 들어온 수치 중 가장 작은 값을 지속적으로 갱신
-        self.max_val_recorded = max(self.max_val_recorded, current_val)  # 들어온 수치 중 가장 큰 값을 지속적으로 갱신
+        progress_ratio = round(progress_ratio, 2)
+        is_count_updated = False
 
-        val_range = abs(self.target_val - self.start_val)  # 현재 설정된 운동의 전체 가동 범위 크기 계산
-        progress_ratio = round(float(np.clip(abs(current_val - self.start_val) / val_range, 0.0, 1.0)), 2) if val_range != 0 else 0.0  # 시작점 대비 현재 위치를 0.0~1.0 사이의 백분율로 제한하여 산출
-        is_count_updated = False  # 현재 프레임에서 운동 횟수가 증가했는지를 클라이언트에 알릴 논리 플래그
+        # 1. 수축 시작 (READY -> PUSHING)
+        if self.state == "READY":
+            if progress_ratio >= 0.20:
+                self.state = "PUSHING"
 
-        if self.state == "READY":  # FSM이 다음 동작을 기다리는 준비 상태인 경우
-            if progress_ratio > 0.2:  # 사용자가 시작점으로부터 20% 이상 확실하게 움직임을 시작한 경우
-                self.state = "PUSHING"  # 상태를 수축 진행 중(PUSHING)으로 전이
+        # 2. 수축 진행 및 복귀 카운트 (PUSHING -> READY)
+        elif self.state == "PUSHING":
+            # 35% 이상 올라가면 유효 동작으로 인정
+            if progress_ratio >= 0.35:
+                self.peak_reached = True
 
-        elif self.state == "PUSHING":  # FSM이 사용자의 근육 수축 동작을 추적 중인 상태인 경우
-            if progress_ratio >= 0.40:  # 사용자가 유효 판정 최소 기준인 40% 지점을 돌파한 경우
-                self.peak_reached = True  # 이번 횟수를 무효가 아닌 유효한 동작으로 인정하는 플래그 활성화
+            # 복귀 기준을 0.25로 여유 있게 완화하여 오차 흡수
+            if progress_ratio <= 0.25:
+                if self.peak_reached:
+                    peak_val = self.min_val_recorded if self.is_decreasing else self.max_val_recorded
+                    quality = self.evaluate_quality(peak_val)
 
-            if progress_ratio <= 0.15:  # 힘을 빼고 다시 시작점 방향(15% 지점 이하)으로 복귀한 경우
-                if self.peak_reached:  # 단순히 깔짝거린 것이 아니라 40% 이상 깊이 도달하고 돌아온 정상 동작일 경우
-                    peak_val = self.min_val_recorded if self.is_decreasing else self.max_val_recorded  # 수치 증감 방향에 따라 기록된 극값 중 진짜 피크값 결정
-                    quality = self.evaluate_quality(peak_val)  # 도출된 피크값으로 이번 회차의 수행 품질 등급 평가
+                    # 35% 이상 가동 후 복귀 시 무효 판정 방지 (최소 BAD 인정)
+                    if quality == "INVALID" and self.peak_reached:
+                        quality = "BAD"
 
-                    if quality in ["PERFECT", "GOOD", "BAD"]:  # 수행 품질이 최하 등급인 무효(INVALID) 판정이 아닌 경우
-                        self.rep_count += 1  # 정상적인 운동 1회 수행으로 인정하여 카운트 증가
-                        is_count_updated = True  # 화면 UI에 축하 이펙트를 띄울 수 있도록 갱신 플래그 활성화
-                        self.last_quality = quality  # 사용자에게 텍스트로 보여주기 위해 평가된 품질을 캐시에 저장
+                    self.rep_count += 1
+                    is_count_updated = True
+                    self.last_quality = quality
 
-                        self.completed_reps_history.append({  # 파일 저장을 위해 성공한 회차의 상세 메타데이터 누적
-                            "side": self.side,  # 신체 측면 정보
-                            "rep_num": self.rep_count,  # 누적된 회차 번호
-                            "duration_sec": 0.0,  # 시간 측정값 (필요 시 외부 타임스탬프와 연동 가능)
-                            "min_angle": round(self.min_val_recorded, 2),  # 1회 동작 중 기록된 최소 꺾임 수치
-                            "max_angle": round(self.max_val_recorded, 2),  # 1회 동작 중 기록된 최대 꺾임 수치
-                            "achieved_rom": round(abs(self.max_val_recorded - self.min_val_recorded), 2),  # 실제 달성한 순수 가동 범위
-                            "quality": quality,  # 최종 부여된 품질 등급
-                        })  # 딕셔너리 정보 리스트 삽입 완료
+                    self.completed_reps_history.append({
+                        "side": self.side,
+                        "rep_num": self.rep_count,
+                        "duration_sec": 0.0,
+                        "min_angle": round(self.min_val_recorded, 2),
+                        "max_angle": round(self.max_val_recorded, 2),
+                        "achieved_rom": round(abs(self.max_val_recorded - self.min_val_recorded), 2),
+                        "quality": quality,
+                    })
 
-                self.min_val_recorded, self.max_val_recorded = 999.0, -999.0  # 다음 회차 측정을 위해 극값 추적 변수 초기화
-                self.peak_reached = False  # 유효 동작 달성 플래그도 초기화
-                self.state = "WAITING" if self.rep_count >= self.target_reps else "READY"  # 목표를 다 채웠으면 대기 상태로, 아니면 다음 준비 상태로 전이
+                    print(f"\n[FSM COUNT UP] {self.side.upper()} Rep: {self.rep_count}/{self.target_reps} | Quality: {quality} | Peak: {peak_val:.2f}")
 
-        return {"state": self.state, "rep_count": self.rep_count, "progress_ratio": progress_ratio, "quality": self.last_quality, "is_count_updated": is_count_updated}  # 조립된 현재 상태 패킷 반환
+                # 극값 및 상태 리셋
+                self.min_val_recorded = 999.0
+                self.max_val_recorded = -999.0
+                self.peak_reached = False
+                self.state = "WAITING" if self.rep_count >= self.target_reps else "READY"
 
+        return {
+            "state": self.state,
+            "rep_count": self.rep_count,
+            "progress_ratio": progress_ratio,
+            "quality": self.last_quality,
+            "is_count_updated": is_count_updated
+        }
 
 class MotionEngine:  # 좌우 FSM을 통괄하고 관절 좌표에서 수학적 측정값을 도출하는 메인 엔진 클래스
 

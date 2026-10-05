@@ -2,7 +2,7 @@
 # [Module Information]
 # File: utils/normalization.py
 # Description: Torso-scaled isotropic normalization centering the pelvis at (0, 0)
-#              with Cartesian Y-axis inversion (Upward is positive).
+#              maintaining standard screen coordinate system (Downward is +Y).
 # ==============================================================================
 
 import numpy as np
@@ -12,6 +12,7 @@ class PoseNormalizer:
     """
     골반 중심을 (0, 0)으로 설정하고 몸통(어깨-골반 거리) 길이를 1.0으로 스케일링하는
     등방성(Isotropic) 2D 포즈 정규화 클래스.
+    화면 좌표계(위쪽 0, 아래쪽 +Y)를 그대로 유지하여 팔을 위로 올릴 시 Y값이 감소합니다.
     """
 
     # COCO 관절 인덱스 정의
@@ -20,11 +21,11 @@ class PoseNormalizer:
     LEFT_HIP = 11
     RIGHT_HIP = 12
 
-    def __init__(self, conf_threshold: float = 0.35, invert_y: bool = True):
+    def __init__(self, conf_threshold: float = 0.35, invert_y: bool = False):
         """
         Args:
             conf_threshold: 기준 관절(골반/어깨)의 최소 감지 신뢰도 임계값
-            invert_y: True일 경우 이미지의 하향 Y축을 데카르트 상향(+Y)으로 반전
+            invert_y: False일 경우 화면 기본 좌표계 유지 (상향 이동 시 Y값 감소)
         """
         self.conf_threshold = conf_threshold
         self.invert_y = invert_y
@@ -81,11 +82,11 @@ class PoseNormalizer:
         # 3. 원점 평행이동 및 등방성 스케일링 수행
         norm_coords = (coords - hip_center) / torso_length
 
-        # 4. 데카르트 좌표계 보정 (위쪽이 양수가 되도록 Y축 반전)
+        # 4. Y축 반전 비활성화 (화면 좌표계 유지)
         if self.invert_y:
             norm_coords[:, 1] = -norm_coords[:, 1]
 
-        # 5. 기존 파이프라인과 완벽 호환되는 딕셔너리 구조체로 복원
+        # 5. 기존 파이프라인 호환 딕셔너리 구조체로 복원
         normalized_list = []
         for i in range(17):
             normalized_list.append({
@@ -95,11 +96,10 @@ class PoseNormalizer:
                 "score": round(float(scores[i]), 3)
             })
 
-        print(f"[DEBUG][NORM] Pelvis Center: ({hip_center[0]:.3f}, {hip_center[1]:.3f}), Torso Length: {torso_length:.3f}")
         return normalized_list
 
 
 # 함수형 인터페이스 호환용 래퍼
-def normalize_pelvis_centered(keypoints: list, invert_y: bool = True) -> list:
+def normalize_pelvis_centered(keypoints: list, invert_y: bool = False) -> list:
     normalizer = PoseNormalizer(invert_y=invert_y)
     return normalizer.normalize(keypoints)

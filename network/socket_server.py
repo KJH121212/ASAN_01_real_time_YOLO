@@ -2,7 +2,8 @@
 # [Module Information]
 # File: network/socket_server.py
 # Description: WebSocket streaming server supporting a strictly 3-repetition
-#              calibration workflow and saving unadulterated RAW keypoints.
+#              calibration workflow, multi-source input (Webcam, Video File,
+#              Image Sequence Directory), and saving unadulterated RAW keypoints.
 # ==============================================================================
 
 import os
@@ -11,6 +12,7 @@ os.environ["MMCV_WITH_OPS"] = "0"
 import asyncio
 import base64
 from datetime import datetime
+from glob import glob
 import json
 from pathlib import Path
 import sys
@@ -55,7 +57,6 @@ root_dir = os.path.dirname(network_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-# network/socket_server.py 50~65 라인 주변 임포트 블록 점검
 from core.data_manager import DataManager, load_exercise_config
 from core.motion_engine import MotionEngine
 from core.skeleton_engine import SkeletonEngine
@@ -63,17 +64,60 @@ from core.session_controller import SessionController
 from utils.filters import RealtimeEMAFilter
 from utils.normalization import PoseNormalizer
 
-class ThreadedCamera:
-    """백그라운드 스레드에서 무한 루프로 최신 1프레임만 버퍼링하는 카메라 리더"""
 
-    def __init__(self, camera_index=0):
-        self.camera_index = camera_index
-        self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.grabbed, self.frame = self.cap.read()
+class ThreadedCamera:
+    """
+    웹캠 인덱스, 단일 동영상 파일(MP4 등), 이미지 시퀀스 디렉터리를
+    모두 지원하며 백그라운드 스레드에서 최신 1프레임을 공급하는 리더.
+    """
+
+    def __init__(self, source=0, target_fps=30.0):
+        self.source = source
+        self.target_fps = target_fps
+        self.frame_delay = 1.0 / target_fps
+
+        self.mode = "CAM"  # "CAM", "VIDEO", "IMAGE_DIR"
+        self.image_files = []
+        self.image_idx = 0
+        self.cap = None
+
+        # 1. 이미지 디렉터리 경로 검사
+        if isinstance(source, str) and os.path.isdir(source):
+            self.mode = "IMAGE_DIR"
+            exts = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.PNG"]
+            for ext in exts:
+                self.image_files.extend(glob(os.path.join(source, ext)))
+            self.image_files.sort()
+            print(f"[DEBUG][SOURCE] Image Directory mode: {len(self.image_files)} frames found in '{source}'")
+
+            if self.image_files:
+                self.frame = cv2.imread(self.image_files[0])
+                self.grabbed = self.frame is not None
+            else:
+                self.grabbed, self.frame = False, None
+
+        # 2. 동영상 파일 경로 검사
+        elif isinstance(source, str) and os.path.isfile(source):
+            self.mode = "VIDEO"
+            self.cap = cv2.VideoCapture(source)
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if fps and fps > 0:
+                self.frame_delay = 1.0 / fps
+            self.grabbed, self.frame = self.cap.read()
+            print(f"[DEBUG][SOURCE] Video File mode: '{source}' (FPS: {1.0 / self.frame_delay:.1f})")
+
+        # 3. 실시간 물리 웹캠 모드 (기본)
+        else:
+            self.mode = "CAM"
+            cam_idx = int(source) if str(source).isdigit() else 0
+            self.cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.grabbed, self.frame = self.cap.read()
+            self.frame_delay = 0.005
+            print(f"[DEBUG][SOURCE] Live Webcam mode (Index: {cam_idx}), Initial Grab: {self.grabbed}")
+
         self.started = False
         self.read_lock = threading.Lock()
-        print(f"[DEBUG][CAMERA] Initialized index: {camera_index}, Initial Grab: {self.grabbed}")
 
     def start(self):
         if self.started:
@@ -81,15 +125,48 @@ class ThreadedCamera:
         self.started = True
         self.thread = threading.Thread(target=self.update, daemon=True)
         self.thread.start()
-        print("[DEBUG][CAMERA] Background worker capture thread active.")
+        print(f"[DEBUG][SOURCE] Capture worker thread active for mode: {self.mode}")
         return self
 
     def update(self):
         while self.started:
-            grabbed, frame = self.cap.read()
-            with self.read_lock:
-                self.grabbed = grabbed
-                self.frame = frame
+            start_t = time.time()
+
+            if self.mode == "IMAGE_DIR":
+                if not self.image_files:
+                    time.sleep(0.03)
+                    continue
+
+                self.image_idx = (self.image_idx + 1) % len(self.image_files)
+                frame = cv2.imread(self.image_files[self.image_idx])
+                grabbed = frame is not None
+
+                with self.read_lock:
+                    self.grabbed = grabbed
+                    self.frame = frame
+
+            elif self.mode == "VIDEO":
+                grabbed, frame = self.cap.read()
+                # 영상이 끝나면 0번 프레임으로 되감아 무한 루프 반복
+                if not grabbed or frame is None:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    grabbed, frame = self.cap.read()
+
+                with self.read_lock:
+                    self.grabbed = grabbed
+                    self.frame = frame
+
+            elif self.mode == "CAM":
+                grabbed, frame = self.cap.read()
+                with self.read_lock:
+                    self.grabbed = grabbed
+                    self.frame = frame
+
+            # FPS 동기화 슬립
+            elapsed = time.time() - start_t
+            sleep_time = self.frame_delay - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     def read(self):
         with self.read_lock:
@@ -101,12 +178,13 @@ class ThreadedCamera:
         self.started = False
         if self.cap and self.cap.isOpened():
             self.cap.release()
-        print("[DEBUG][CAMERA] Camera resource disposed.")
+        print(f"[DEBUG][SOURCE] Source ({self.mode}) resource disposed.")
 
 
 class ExerciseSocketServer:
     """
     3회 반복 기반 캘리브레이션 및 실시간 모션 측정을 전담하는 WebSocket 서버 클래스.
+    웹캠, 비디오 파일, 이미지 디렉터리 입력을 모두 지원합니다.
     """
 
     def __init__(self, host="127.0.0.1", port=8080):
@@ -124,10 +202,10 @@ class ExerciseSocketServer:
         self.filter_engine = None
         self.last_frame_b64 = None
 
-    def start_camera(self, camera_index: int = 0):
+    def start_camera(self, source=0):
         if self.camera:
             self.camera.stop()
-        self.camera = ThreadedCamera(camera_index).start()
+        self.camera = ThreadedCamera(source).start()
 
     def stop_camera(self):
         if self.camera:
@@ -141,10 +219,18 @@ class ExerciseSocketServer:
         exercise_name = data.get("exercise_name", "biceps_curl")
         mode = data.get("mode", "CALIBRATION")
         target_reps = int(data.get("target_reps", 10))
-        camera_idx = int(data.get("camera_index", 0))
 
-        print(f"[DEBUG][SESSION] Initializing session -> Player: {player_id}, Exercise: {exercise_name}, Mode: {mode}")
-        self.start_camera(camera_idx)
+        # [B안 지원 분기] input_source, video_path, image_dir을 순차 확인 후 기본 camera_index로 폴백
+        source = (
+            data.get("input_source")
+            or data.get("video_path")
+            or data.get("image_dir")
+        )
+        if source is None:
+            source = int(data.get("camera_index", 0))
+
+        print(f"[DEBUG][SESSION] Initializing session -> Player: {player_id}, Exercise: {exercise_name}, Mode: {mode}, Source: {source}")
+        self.start_camera(source)
 
         data_manager = DataManager(player_id=player_id, patient_name=patient_name)
         exercise_config = load_exercise_config(exercise_name)
