@@ -1,18 +1,17 @@
 # ==============================================================================
 # [Module Information]
 # File: app.py
-# Description: Streamlit frontend controller supporting 3-repetition calibration,
-#              real-time pose overlay, and HUD synchronizations.
+# Description: Pure Streamlit client frontend for AI rehabilitation motion tracking.
+#              Displays clean skeleton video on viewport and delegates all HUD
+#              and dynamic ROM gauges to the right side panel.
 # ==============================================================================
 
 import asyncio
 import base64
 import json
 import os
-import socket
-import subprocess
+from pathlib import Path
 import sys
-import time
 import traceback
 import cv2
 import numpy as np
@@ -31,44 +30,10 @@ def get_root_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def is_port_in_use(port: int = 8080, host: str = "127.0.0.1") -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex((host, port)) == 0
-
-
-def ensure_socket_server(base_dir: str):
-    """소켓 서버 포트 점유 여부를 검사하고 미실행 시 백그라운드로 기동합니다."""
-    if is_port_in_use(8080):
-        print("[DEBUG][SERVER] Port 8080 is active. Skipping process spawn.")
-        return
-
-    if "server_process" not in st.session_state or st.session_state.server_process is None:
-        server_script = os.path.join(base_dir, "network", "socket_server.py")
-        print(f"[DEBUG][SERVER] Launching backend server script: {server_script}")
-        try:
-            process = subprocess.Popen([sys.executable, server_script])
-            st.session_state.server_process = process
-            print(f"[DEBUG][SERVER] Subprocess PID: {process.pid}. Waiting 3.0s for weight loading...")
-            time.sleep(3.0)
-        except Exception as e:
-            print(f"[ERROR][SERVER] Failed to execute socket server: {e}")
-            traceback.print_exc()
-
-
-def toggle_session():
-    st.session_state.is_running = not st.session_state.is_running
-    print(f"[DEBUG][UI] Session toggle button pressed. Running state: {st.session_state.is_running}")
-
-
-async def run_unity_client_session(uri: str, config: dict, placeholders: dict, renderer: OverlayRenderer):
-    """WebSocket 스트리밍 연결 및 3회 캘리브레이션 / 본 운동 HUD 동기화 루프"""
-    print(f"[DEBUG][WS] Connecting to socket server: {uri}")
-
+async def run_client_session(uri: str, config: dict, placeholders: dict, renderer: OverlayRenderer):
+    """WebSocket 실시간 스트리밍 및 CALIBRATION / TEST 통제 루프"""
     try:
         async with websockets.connect(uri) as ws:
-            print("[DEBUG][WS] Connection established successfully.")
-
-            # 시간 파라미터 제외, 3회 고정 캘리브레이션 규격 패킷 발송
             cmd_packet = {
                 "type": "CMD_SET_SESSION",
                 "player_id": config["player_id"],
@@ -77,29 +42,35 @@ async def run_unity_client_session(uri: str, config: dict, placeholders: dict, r
                 "mode": config["mode"],
                 "target_reps": config["target_reps"],
                 "camera_index": config["camera_index"],
+                "input_source": config.get("input_source")
             }
             await ws.send(json.dumps(cmd_packet))
-            print(f"[DEBUG][WS] Initialized session with packet: {cmd_packet}")
 
             packet_count = 0
             while st.session_state.get("is_running", False):
                 try:
-                    raw_res = await asyncio.wait_for(ws.recv(), timeout=0.03)
+                    raw_res = await asyncio.wait_for(ws.recv(), timeout=0.005)
                     data = json.loads(raw_res)
                     pkt_type = data.get("type")
                     packet_count += 1
 
-                    # 1. 완료 이벤트 수신 처리
+                    # 1. 세션 완료 이벤트 처리
                     if pkt_type in ["SESSION_FINISHED", "CALIBRATION_FINISHED"]:
-                        print(f"[DEBUG][WS] Received session termination signal: {pkt_type}")
                         summary = data.get("summary", {})
-                        placeholders["alert"].success(
-                            f"Session Completed: {pkt_type} | Saved Records: {summary.get('saved_reps_count', 0)}"
-                        )
+                        if pkt_type == "CALIBRATION_FINISHED":
+                            th = data.get("thresholds", {})
+                            st.session_state.last_calib_thresholds = th
+                            placeholders["alert"].success(
+                                "캘리브레이션 3회 완수! 맞춤 임계값이 성공적으로 저장되었습니다."
+                            )
+                        else:
+                            placeholders["alert"].success(
+                                f"본 운동 세션 완료! 총 {summary.get('saved_reps_count', config['target_reps'])}회 달성 완료"
+                            )
                         st.session_state.is_running = False
                         break
 
-                    # 2. 실시간 프레임 패킷 수신 처리
+                    # 2. 실시간 포즈 업데이트 처리
                     if pkt_type == "POSE_UPDATE":
                         img_b64 = data.get("frame_b64")
                         canvas = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -113,8 +84,10 @@ async def run_unity_client_session(uri: str, config: dict, placeholders: dict, r
                         keypoints = data.get("keypoints", [])
                         is_occluded = data.get("is_occluded", False)
                         current_mode = data.get("mode", config["mode"])
+                        left_info = data.get("left", {})
+                        right_info = data.get("right", {})
 
-                        # 뼈대 오버레이 시각화
+                        # 영상에는 순수하게 스켈레톤 선과 관절 포인트만 렌더링 (HUD/Bar 오버레이 완전 제거)
                         canvas = renderer.draw_skeleton(
                             canvas=canvas,
                             keypoints=keypoints,
@@ -122,134 +95,161 @@ async def run_unity_client_session(uri: str, config: dict, placeholders: dict, r
                             is_cartesian_space=False
                         )
 
-                        rgb_canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-                        placeholders["video"].image(rgb_canvas, channels="RGB")
+                        val_l = left_info.get("val")
+                        val_r = right_info.get("val")
 
-                        # 캘리브레이션 3회 수행 UI 분기
+                        # ------------------------------------------------------
+                        # [오른쪽 패널 HUD 및 상단 알림창 업데이트]
+                        # ------------------------------------------------------
                         if current_mode == "CALIBRATION":
                             calib_step = data.get("calib_step", "")
-                            calib_rep_count = data.get("calib_rep_count", 0)
-                            target_calib_reps = data.get("target_calib_reps", 3)
+                            calib_reps = data.get("calib_rep_count", 0)
+                            target_reps = data.get("target_calib_reps", 3)
+
+                            placeholders["left_metric"].metric(
+                                label="캘리브레이션 횟수",
+                                value=f"{calib_reps} / {target_reps}",
+                                delta=f"상태: {calib_step}"
+                            )
+                            placeholders["right_metric"].metric(
+                                label="실시간 수치 (L / R)",
+                                value=f"{val_l or 0.0:.2f} / {val_r or 0.0:.2f}",
+                                delta=f"FSM: L[{left_info.get('state', '-')}] R[{right_info.get('state', '-')}]"
+                            )
 
                             if is_occluded:
-                                placeholders["alert"].error("Occlusion Detected: Stand in camera center to reset.")
+                                placeholders["alert"].error("가림 감지: 신체가 화면 중앙에 온전히 나오도록 서주세요.")
                             elif calib_step == "FULL_BODY_CHECK":
-                                placeholders["alert"].info("Standby: Please stand still facing the camera.")
+                                placeholders["alert"].info("정면을 응시하고 준비 자세를 유지해주세요.")
                             elif calib_step == "COUNTDOWN":
-                                placeholders["alert"].warning("Preparation: Get ready to perform 3 full repetitions.")
+                                placeholders["alert"].warning("카운트다운: 잠시 후 3회 동작 수집을 시작합니다.")
                             elif calib_step == "COLLECTING":
-                                placeholders["alert"].success(
-                                    f"Calibrating ROM: Perform 3 full reps! (Progress: {calib_rep_count} / {target_calib_reps})"
-                                )
+                                placeholders["alert"].success(f"측정 진행 중: 전체 가동 범위로 3회 반복하세요! ({calib_reps}/{target_reps})")
+                            elif calib_step == "COOLDOWN":
+                                placeholders["alert"].success("측정 완료! 3회 달성 성공 (잠시 후 결과가 저장됩니다)")
 
-                        # 본 운동(TEST) 세션 UI 분기
-                        else:
-                            if is_occluded:
-                                placeholders["alert"].error("Occlusion Alert: Keep entire body in frame. (FSM frozen)")
-                            else:
-                                placeholders["alert"].empty()
-
-                            left_info = data.get("left", {})
-                            right_info = data.get("right", {})
+                        else:  # TEST 모드
+                            l_cnt = left_info.get("rep_count", 0)
+                            r_cnt = right_info.get("rep_count", 0)
+                            rep_val = max(l_cnt, r_cnt)
+                            target_reps = config["target_reps"]
 
                             placeholders["left_metric"].metric(
                                 label="Left Reps",
-                                value=f"{left_info.get('rep_count', 0)} / {config['target_reps']}",
-                                delta=f"Quality: {left_info.get('quality', '-')}"
+                                value=f"{l_cnt} / {target_reps}",
+                                delta=f"등급: {left_info.get('quality', '-')}"
                             )
-
                             placeholders["right_metric"].metric(
                                 label="Right Reps",
-                                value=f"{right_info.get('rep_count', 0)} / {config['target_reps']}",
-                                delta=f"Quality: {right_info.get('quality', '-')}"
+                                value=f"{r_cnt} / {target_reps}",
+                                delta=f"등급: {right_info.get('quality', '-')}"
                             )
 
-                            l_ratio = min(max(float(left_info.get("progress_ratio", 0.0)), 0.0), 1.0)
-                            r_ratio = min(max(float(right_info.get("progress_ratio", 0.0)), 0.0), 1.0)
+                            if is_occluded:
+                                placeholders["alert"].error("가림 감지: 신체 주요 관절이 가려져 FSM이 일시 중지되었습니다.")
+                            elif rep_val >= target_reps:
+                                placeholders["alert"].success(f"🎉 목표 완수! 총 {target_reps}회를 모두 달성했습니다. (데이터 정리 중...)")
+                            else:
+                                placeholders["alert"].empty()
 
-                            placeholders["left_progress"].progress(l_ratio, text=f"Left ROM: {int(l_ratio * 100)}%")
-                            placeholders["right_progress"].progress(r_ratio, text=f"Right ROM: {int(r_ratio * 100)}%")
+                        # 화면 스트림 렌더링
+                        rgb_canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+                        placeholders["video"].image(rgb_canvas, channels="RGB")
+
+                        # 오른쪽 사이드 패널의 Real-Time ROM 진행 바 갱신
+                        l_ratio = min(max(float(left_info.get("progress_ratio", 0.0)), 0.0), 1.0)
+                        r_ratio = min(max(float(right_info.get("progress_ratio", 0.0)), 0.0), 1.0)
+                        placeholders["left_progress"].progress(l_ratio, text=f"Left ROM: {int(l_ratio * 100)}% (수치: {val_l or 0.0:.2f})")
+                        placeholders["right_progress"].progress(r_ratio, text=f"Right ROM: {int(r_ratio * 100)}% (수치: {val_r or 0.0:.2f})")
 
                         fps_val = data.get("fps", 0.0)
-                        placeholders["fps"].caption(
-                            f"Status: Connected | FPS: {fps_val:.1f} | Mode: {current_mode} | Packets: {packet_count}"
-                        )
+                        placeholders["fps"].caption(f"FPS: {fps_val:.1f} | Mode: {current_mode} | Packets: {packet_count}")
 
                 except asyncio.TimeoutError:
                     pass
 
-    except websockets.exceptions.ConnectionClosed:
-        print("[WARN][WS] Remote server closed connection.")
-        placeholders["alert"].warning("WebSocket server closed connection.")
+    except ConnectionRefusedError:
+        placeholders["alert"].error("소켓 서버(127.0.0.1:8080)에 연결할 수 없습니다. 먼저 별도 터미널에서 python network/socket_server.py 를 실행하세요.")
         st.session_state.is_running = False
     except Exception as e:
-        print(f"[ERROR][WS] Pipeline error: {e}")
         traceback.print_exc()
-        placeholders["alert"].error(f"Socket connection failure: {e}")
+        placeholders["alert"].error(f"서버 통신 오류: {e}")
         st.session_state.is_running = False
 
 
 def main():
-    st.set_page_config(page_title="AI Rehab Unity Simulator", layout="wide")
-    st.title("AI Rehabilitation Motion Frontend Simulator")
+    st.set_page_config(page_title="AI Rehabilitation Motion Studio", layout="wide")
+    st.title("AI Rehabilitation Motion System")
     st.markdown("---")
 
-    base_root = get_root_dir()
     renderer = OverlayRenderer(conf_threshold=0.35)
 
     if "is_running" not in st.session_state:
         st.session_state.is_running = False
+    if "last_calib_thresholds" not in st.session_state:
+        st.session_state.last_calib_thresholds = None
+
+    default_video_path = r"C:\Users\kjh\code\ASAN_01_real_time_YOLO\data\test\biceps_curl\patient_1\calibration.mp4"
 
     with st.sidebar:
-        st.header("Session Control Panel")
+        st.header("Session Settings")
 
         player_id = st.text_input("Patient ID", value="patient_1")
-        patient_name = st.text_input("Patient Name", value="Kim Jihoo")
+        patient_name = st.text_input("Patient Name", value="김지후")
 
-        exercise_list = [
-            "biceps_curl",
-            "shoulder_press",
-            "clamshell",
-            "slr",
-            "hip_knee_flexion",
-            "knee_extension"
-        ]
+        exercise_list = ["biceps_curl", "shoulder_press", "clamshell", "slr", "knee_extension"]
         exercise_name = st.selectbox("Exercise Name", exercise_list, index=0)
 
-        mode = st.radio("Session Mode", ["CALIBRATION", "TEST"], index=0)
+        mode = st.radio("Execution Mode", ["CALIBRATION", "TEST"], index=0)
 
-        # 캘리브레이션은 3회 고정이므로 슬라이더 대신 고정 정보 표시
         if mode == "CALIBRATION":
-            st.info("Calibration Mode: Perform exactly 3 repetitions.")
+            st.info("고정 3회 동작을 통해 개인 맞춤형 ROM 임계값을 산출합니다.")
             target_reps = 3
         else:
-            target_reps = st.number_input("Target Repetitions (TEST only)", min_value=1, max_value=50, value=5, step=1)
+            target_reps = st.number_input("Target Repetitions (TEST)", min_value=1, max_value=50, value=5, step=1)
 
-        camera_index = st.number_input("Camera Device Index", min_value=0, max_value=5, value=0, step=1)
+        source_type = st.radio("Source Type", ["Video File Path", "Live Webcam"], index=0)
+
+        input_source = None
+        camera_index = 0
+        if source_type == "Live Webcam":
+            camera_index = st.number_input("Camera Index", min_value=0, max_value=5, value=0, step=1)
+        else:
+            input_source = st.text_input("Video File Path", value=default_video_path)
+
         st.markdown("---")
 
         if not st.session_state.is_running:
-            st.button("Start Session", type="primary", on_click=toggle_session)
+            if st.button("세션 시작 (Start Session)", type="primary"):
+                st.session_state.is_running = True
+                st.rerun()
         else:
-            st.button("Stop Session", on_click=toggle_session)
+            if st.button("세션 중지 (Stop Session)"):
+                st.session_state.is_running = False
+                st.rerun()
+
+        if st.session_state.last_calib_thresholds:
+            st.markdown("---")
+            st.caption("최근 산출된 맞춤 ROM 임계값")
+            st.json(st.session_state.last_calib_thresholds)
 
     col_view, col_stats = st.columns([3, 2])
 
     with col_view:
-        st.subheader("Visual Skeleton Viewport")
+        st.subheader("실시간 모션 뷰포트 (Skeleton Only)")
         alert_box = st.empty()
         video_box = st.empty()
         fps_box = st.empty()
 
     with col_stats:
-        st.subheader("Kinematic HUD")
+        st.subheader("운동 성과 및 생체 역학 HUD")
         col_m1, col_m2 = st.columns(2)
         with col_m1:
             left_metric_box = st.empty()
         with col_m2:
             right_metric_box = st.empty()
 
-        st.markdown("##### Real-Time Range of Motion (ROM)")
+        st.markdown("##### Real-Time ROM Gauge")
         left_prog_box = st.empty()
         right_prog_box = st.empty()
 
@@ -264,7 +264,9 @@ def main():
     }
 
     if st.session_state.is_running:
-        ensure_socket_server(base_root)
+        chosen_source = None
+        if source_type == "Video File Path" and input_source:
+            chosen_source = str(Path(input_source).resolve())
 
         cfg = {
             "player_id": player_id,
@@ -273,9 +275,10 @@ def main():
             "mode": mode,
             "target_reps": int(target_reps),
             "camera_index": int(camera_index),
+            "input_source": chosen_source,
         }
 
-        asyncio.run(run_unity_client_session("ws://127.0.0.1:8080", cfg, placeholders, renderer))
+        asyncio.run(run_client_session("ws://127.0.0.1:8080", cfg, placeholders, renderer))
 
 
 if __name__ == "__main__":

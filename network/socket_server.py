@@ -392,25 +392,23 @@ class ExerciseSocketServer:
                         # ------------------------------------------------------
                         # [MODE 1] CALIBRATION: 고정 3회 동작 수집 파이프라인
                         # ------------------------------------------------------
+                        # [MODE 1] CALIBRATION: 고정 3회 동작 수집 파이프라인
                         if current_mode == "CALIBRATION":
                             cal_res = self.controller.process_calibration_frame(filtered_kpts, is_occluded)
                             calib_rep_count = cal_res["calib_rep_count"]
 
-                            # 수집 중 가림이 없을 때 [순수 원본 텐서]를 누적
-                            if cal_res["calib_step"] == "COLLECTING" and not is_occluded and raw_kpts:
+                            # COLLECTING 및 1초 COOLDOWN 중에도 원본 좌표 버퍼를 계속 수집
+                            if cal_res["calib_step"] in ["COLLECTING", "COOLDOWN"] and not is_occluded and raw_kpts:
                                 vl = self.controller.calib_vals_left[-1] if self.controller.calib_vals_left else 0.0
                                 vr = self.controller.calib_vals_right[-1] if self.controller.calib_vals_right else 0.0
                                 self._append_to_buffers({"val": vl}, {"val": vr}, raw_kpts)
 
-                            # 3회 반복 완수 시 저장 및 후처리 실행
+                            # 1초 쿨다운이 온전히 끝난 후 FINISHED일 때만 종료 패킷 발송
                             if cal_res["calib_step"] == "FINISHED":
-                                print("[DEBUG][CALIB] 3 Repetitions reached. Saving RAW NPZ and post-processing thresholds...")
+                                print("[DEBUG][CALIB] 1-sec cooldown complete. Saving RAW NPZ and post-processing thresholds...")
                                 ex_name = getattr(self.controller.motion_engine, "exercise_name", "biceps_curl")
 
-                                # 1. 순수 원본 궤적 저장 (CALIB 접두사)
                                 calib_summary = self._save_session_files(prefix="CALIB")
-
-                                # 2. 백분위수 기반 임계값 후처리 및 JSON 저장
                                 custom_th = self.controller.compute_and_save_thresholds(ex_name)
 
                                 finish_payload = {

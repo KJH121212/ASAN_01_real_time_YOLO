@@ -7,8 +7,7 @@
       "eval_config": {
         "metric_type": "RELATIVE_Y",
         "motion_direction": "INCREASING",
-        "target_kpt": { "left": 9, "right": 10 },
-        "base_kpt": { "left": 11, "right": 12 }
+        "target_kpt": { "left": 9, "right": 10 }
       },
       "default_thresholds": {
         "left": { "start_val": 0.1, "target_val": 0.9 },
@@ -53,8 +52,7 @@
       "eval_config": {
         "metric_type": "RELATIVE_Y",
         "motion_direction": "DECREASING",
-        "target_kpt": { "left": 15, "right": 16 },
-        "base_kpt": { "left": 11, "right": 12 }
+        "target_kpt": { "left": 15, "right": 16 }
       },
       "default_thresholds": {
         "left": { "start_val": 1.2, "target_val": -1.2 },
@@ -89,8 +87,8 @@
         }
       },
       "default_thresholds": {
-        "left": { "start_val": 1.0, "target_val": 0.1 },
-        "right": { "start_val": 1.0, "target_val": 0.1 }
+        "left": { "start_val": -1.0, "target_val": 0.5 },
+        "right": { "start_val": -1.0, "target_val": 0.5 }
       }
     }
   }

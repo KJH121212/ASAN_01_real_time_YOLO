@@ -172,37 +172,33 @@ class DataManager:
         prefix: str = "SESSION"
     ):
         """
-        후처리가 전혀 적용되지 않은 순수 원본 17개 관절 시계열 좌표 행렬을 NPZ로 압축 저장합니다.
-        
-        Args:
-            session_id: 세션 고유 식별 타임스탬프 문자열
-            exercise_name: 대상 운동 종목명
-            timestamps: 프레임별 경과 시간 리스트 (N,)
-            values: 실시간 계산 수치 리스트 (N, 2)
-            raw_keypoints: 비전 추론 모델에서 추출된 순수 원본 관절 리스트 (N, 17, 3)
-            prefix: 파일명 접두사 ('SESSION' 또는 'CALIB')
+        후처리가 전혀 적용되지 않은 순수 원본 17개 관절 시계열 좌표 행렬을 
+        운동 종목별 하위 디렉터리에 NPZ로 압축 저장합니다.
         """
         if not timestamps or not raw_keypoints:
             print("[DEBUG][IO] Trajectory buffer is empty. Aborting raw NPZ export.")
             return
 
-        # 고유 파일명 조립: {prefix}_{session_id}_skeleton.npz
+        # [수정] 운동 종목별 전용 하위 디렉터리 경로 설정 및 자동 생성
+        exercise_dir = self.skeleton_dir / exercise_name
+        exercise_dir.mkdir(parents=True, exist_ok=True)
+
+        # 파일명 조립: {prefix}_{session_id}_skeleton.npz
         npz_filename = f"{prefix}_{session_id}_skeleton.npz"
-        npz_path = self.skeleton_dir / npz_filename
+        npz_path = exercise_dir / npz_filename
 
         try:
-            # 고속 직렬화 및 메모리 정렬을 위해 NumPy float32 배열로 변환
             ts_array = np.array(timestamps, dtype=np.float32)
             val_array = np.array(values, dtype=np.float32)
             kpt_array = np.array(raw_keypoints, dtype=np.float32)
 
             print(f"[DEBUG][IO] Exporting RAW NPZ trajectory: {npz_path}")
+            print(f"       Exercise Subdirectory: {exercise_dir}")
             print(f"       Prefix: {prefix}")
             print(f"       Timestamps Shape: {ts_array.shape}")
             print(f"       Values Shape: {val_array.shape}")
-            print(f"       Raw Keypoints Shape: {kpt_array.shape} (Expected: (N, 17, 3))")
+            print(f"       Raw Keypoints Shape: {kpt_array.shape}")
 
-            # 순수 원본 좌표를 zlib으로 고압축 덤프 (후처리/필터링 전 원형 유지)
             np.savez_compressed(
                 npz_path,
                 timestamps=ts_array,
