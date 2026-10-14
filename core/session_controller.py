@@ -1,6 +1,6 @@
 # ==============================================================================
 # File: core/session_controller.py
-# Description: 3회 반복 기반 캘리브레이션 및 실시간 데이터 캐시 동기화 제어기
+# Description: 양측(Left & Right) 모두 3회 완수 기반 캘리브레이션 및 세션 제어기
 # ==============================================================================
 
 import os
@@ -23,7 +23,7 @@ class SessionController:
     def __init__(self, data_manager=None, motion_engine=None):
         self.data_manager = data_manager
         self.motion_engine = motion_engine
-        self.target_calib_reps = 3
+        self.target_calib_reps = 3  # 양측 각각 채워야 하는 목표 횟수
 
         self.mode = "CALIBRATION"
         self.calib_step = "FULL_BODY_CHECK"
@@ -33,9 +33,10 @@ class SessionController:
 
         self.calib_vals_left = []
         self.calib_vals_right = []
-        self.calib_rep_count = 0
+        self.calib_reps_left = 0
+        self.calib_reps_right = 0
 
-        # [추가] TEST 모드 목표 달성 후 쿨다운 타이머
+        # TEST 모드 목표 달성 후 쿨다운 타이머
         self.test_finish_timer = None
 
         self.last_left_data = {
@@ -52,7 +53,7 @@ class SessionController:
             "state": "READY",
             "quality": "CALIBRATING",
         }
-        print(f"[DEBUG][CONTROLLER] Initialized successfully. Target Calib Reps: {self.target_calib_reps}")
+        print(f"[DEBUG][CONTROLLER] Initialized successfully. Target Calib Reps per side: {self.target_calib_reps}")
 
     def check_occlusion(self, keypoints: list) -> bool:
         if not keypoints or len(keypoints) < 17:
@@ -62,8 +63,9 @@ class SessionController:
         required_ids = [5, 6, 7, 8, 9, 10, 11, 12]
         return not all(kpt_map.get(i, 0.0) >= 0.35 for i in required_ids)
 
-    def process_calibration_frame(self, raw_keypoints: list, is_occluded: bool) -> dict:
-        now = time.time()
+    def process_calibration_frame(self, raw_keypoints: list, is_occluded: bool, now: float = None) -> dict:
+        if now is None:
+            now = time.time()
 
         if is_occluded:
             if self.calib_step not in ["FULL_BODY_CHECK", "FINISHED"]:
@@ -72,7 +74,8 @@ class SessionController:
             self.timer_start = 0.0
             self.calib_vals_left.clear()
             self.calib_vals_right.clear()
-            self.calib_rep_count = 0
+            self.calib_reps_left = 0
+            self.calib_reps_right = 0
             if self.motion_engine:
                 self.motion_engine.fsm_left.rep_count = 0
                 self.motion_engine.fsm_right.rep_count = 0
@@ -81,10 +84,12 @@ class SessionController:
             return {
                 "calib_step": self.calib_step,
                 "calib_rep_count": 0,
+                "calib_reps_left": 0,
+                "calib_reps_right": 0,
                 "target_calib_reps": self.target_calib_reps
             }
 
-        # 1. 감지 대기
+        # 1. 전신 감지 대기
         if self.calib_step == "FULL_BODY_CHECK":
             self.calib_step = "COUNTDOWN"
             self.timer_start = now
@@ -96,10 +101,11 @@ class SessionController:
             if elapsed >= 3.0:
                 self.calib_step = "COLLECTING"
                 self.timer_start = now
-                self.calib_rep_count = 0
-                print(f"[DEBUG][CALIB] Countdown finished. Collecting {self.target_calib_reps} active repetitions.")
+                self.calib_reps_left = 0
+                self.calib_reps_right = 0
+                print(f"[DEBUG][CALIB] Countdown finished. Collecting {self.target_calib_reps} active repetitions on BOTH sides.")
 
-        # 3. 데이터 수집 및 1초 쿨다운 제어
+        # 3. 데이터 수집 및 양측 완료 판정
         if self.motion_engine and raw_keypoints:
             norm_keypoints = self.normalizer.normalize(raw_keypoints)
             if norm_keypoints:
@@ -121,18 +127,21 @@ class SessionController:
                     if vr is not None:
                         self.calib_vals_right.append(vr)
 
-                    current_reps = max(res_l["rep_count"], res_r["rep_count"])
-                    if current_reps > self.calib_rep_count:
-                        self.calib_rep_count = current_reps
-                        print(f"[CALIB HIT] Rep Count: {self.calib_rep_count}/{self.target_calib_reps}")
+                    self.calib_reps_left = res_l["rep_count"]
+                    self.calib_reps_right = res_r["rep_count"]
 
-                    # 3회 달성 시 즉시 끄지 않고 1초 COOLDOWN 돌입
-                    if self.calib_rep_count >= self.target_calib_reps:
+                    # [핵심 수정] 좌/우측 둘 다 target_calib_reps(3회) 이상 완수해야만 COOLDOWN 진입
+                    both_sides_completed = (
+                        self.calib_reps_left >= self.target_calib_reps and
+                        self.calib_reps_right >= self.target_calib_reps
+                    )
+
+                    if both_sides_completed:
                         self.calib_step = "COOLDOWN"
                         self.timer_start = now
-                        print(f"[CALIB COMPLETE] 3회 달성! 1초간 마무리 프레임을 유지합니다...")
+                        print(f"[CALIB COMPLETE] 양측 모두 {self.target_calib_reps}회 완수 (L:{self.calib_reps_left}, R:{self.calib_reps_right})! 1초간 마무리 프레임 수집...")
 
-                # 3회 달성 후 1.0초 동안 추가 프레임 계속 전송
+                # 양측 모두 3회 달성 후 1.0초간 추가 버퍼링 유지
                 elif self.calib_step == "COOLDOWN":
                     if vl is not None:
                         self.calib_vals_left.append(vl)
@@ -141,13 +150,19 @@ class SessionController:
 
                     if now - self.timer_start >= 1.0:
                         self.calib_step = "FINISHED"
-                        print("[CALIB FINISHED] 1초 쿨다운 종료. 세션을 완료합니다.")
+                        print("[CALIB FINISHED] 1초 쿨다운 종료. 양측 캘리브레이션을 확정합니다.")
+
+        # 통합 횟수 표시는 둘 중 작은 값(최소 달성 횟수)을 기준으로 표기 (둘 다 3이 되어야 3/3 표시)
+        min_completed_reps = min(self.calib_reps_left, self.calib_reps_right)
 
         return {
             "calib_step": self.calib_step,
-            "calib_rep_count": self.calib_rep_count,
+            "calib_rep_count": min_completed_reps,
+            "calib_reps_left": self.calib_reps_left,
+            "calib_reps_right": self.calib_reps_right,
             "target_calib_reps": self.target_calib_reps
         }
+
     def compute_and_save_thresholds(self, exercise_name: str) -> dict:
         def _calc_side(values: list, side: str) -> dict:
             def_th = self.motion_engine.config.get("default_thresholds", {}).get(side, {})
@@ -181,11 +196,11 @@ class SessionController:
 
         return custom_th
 
-    def process_main_frame(self, raw_keypoints: list, is_occluded: bool) -> tuple:
-        """
-        본 운동(TEST) 세션 프레임 처리.
-        목표 횟수 도달 즉시 종료하지 않고 1.5초간 완수 상태 및 영상 송출을 유지합니다.
-        """
+    def process_main_frame(self, raw_keypoints: list, is_occluded: bool, now: float = None) -> tuple:
+        """본 운동 세션 프레임 처리 (목표 달성 후 1.5초 쿨다운 유지)"""
+        if now is None:
+            now = time.time()
+
         if is_occluded or not raw_keypoints:
             return self.last_left_data.copy(), self.last_right_data.copy(), False
 
@@ -206,36 +221,13 @@ class SessionController:
 
         is_finished = False
 
-        # 목표 횟수 달성 시점 감지
         if reps_reached:
-            now = time.time()
             if self.test_finish_timer is None:
                 self.test_finish_timer = now
                 print(f"[DEBUG][TEST] 목표 횟수({target_reps}회) 달성! 1.5초 쿨다운 유지 후 종료합니다.")
 
-            # 1.5초 동안 프레임을 계속 송출하고 대기
             if now - self.test_finish_timer >= 1.5:
                 is_finished = True
                 print("[DEBUG][TEST] 1.5초 쿨다운 종료. 세션 데이터를 저장합니다.")
-
-        return left_data, right_data, is_finished
-
-        if is_occluded or not raw_keypoints:
-            return self.last_left_data.copy(), self.last_right_data.copy(), False
-
-        norm_keypoints = self.normalizer.normalize(raw_keypoints)
-        if not norm_keypoints:
-            return self.last_left_data.copy(), self.last_right_data.copy(), False
-
-        result = self.motion_engine.process_keypoints(norm_keypoints)
-        if not result:
-            return self.last_left_data.copy(), self.last_right_data.copy(), False
-
-        left_data, right_data = result["left"], result["right"]
-        self.last_left_data = left_data.copy()
-        self.last_right_data = right_data.copy()
-
-        target_reps = self.motion_engine.fsm_left.target_reps if self.motion_engine else 10
-        is_finished = (left_data["rep_count"] >= target_reps or right_data["rep_count"] >= target_reps)
 
         return left_data, right_data, is_finished
