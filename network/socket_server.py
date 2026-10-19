@@ -12,6 +12,10 @@ os.environ["MMCV_WITH_OPS"] = "0"
 
 import asyncio
 import base64
+<<<<<<< HEAD
+=======
+from datetime import datetime
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 import json
 import sys
 import threading
@@ -48,8 +52,11 @@ class ThreadedWebcam:
         self.cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.grabbed, self.frame = self.cap.read()
+<<<<<<< HEAD
         self.captured_at = time.perf_counter()
         self.frame_id = 0
+=======
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
         self.started = False
         self.read_lock = threading.Lock()
 
@@ -64,12 +71,18 @@ class ThreadedWebcam:
     def update(self):
         while self.started:
             grabbed, frame = self.cap.read()
+<<<<<<< HEAD
             captured_at = time.perf_counter()
             with self.read_lock:
                 self.grabbed = grabbed
                 self.frame = frame
                 self.captured_at = captured_at
                 self.frame_id += 1
+=======
+            with self.read_lock:
+                self.grabbed = grabbed
+                self.frame = frame
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
             time.sleep(0.005)
 
     def read(self):
@@ -90,7 +103,11 @@ class ThreadedWebcam:
 
 
 class ExerciseSocketServer:
+<<<<<<< HEAD
     def __init__(self, host="127.0.0.1", port=8080, engine_factory=None):
+=======
+    def __init__(self, host="127.0.0.1", port=8080):
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
         self.host = host
         self.port = port
 
@@ -111,6 +128,7 @@ class ExerciseSocketServer:
         self.last_frame_b64 = None
         self.output_mode = "VISUAL"
 
+<<<<<<< HEAD
     @staticmethod
     def _create_skeleton_engine(report_phase):
         # Importing Torch/MMPose and registering models is deliberately deferred
@@ -159,6 +177,8 @@ class ExerciseSocketServer:
             }))
         return True
 
+=======
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
     def start_camera(self, cam_idx=0):
         if self.camera:
             self.camera.stop()
@@ -169,6 +189,7 @@ class ExerciseSocketServer:
             self.camera.stop()
             self.camera = None
 
+<<<<<<< HEAD
     def _prepare_data_manager(self, data, video_fps=30.0, live_timing=False):
         mode = data.get("mode", "CALIBRATION")
         if "cal" in data and (not isinstance(data["cal"], bool) or data["cal"] != (mode == "CALIBRATION")):
@@ -189,12 +210,15 @@ class ExerciseSocketServer:
         self._measurement_ready_at = None
         return manager
 
+=======
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
     def init_live_session(self, data: dict):
         """실시간 웹캠 세션 공통 초기화 (모드 1 & 모드 2)"""
         player_id = data.get("player_id", "patient_1")
         patient_name = data.get("patient_name", "Unknown")
         exercise_name = data.get("exercise_name", "biceps_curl")
         mode = data.get("mode", "CALIBRATION")
+<<<<<<< HEAD
         target_score = get_target_score(data) if "target_score" in data or "target_reps" in data else 10.0
         cam_idx = int(data.get("camera_index", 0))
         self.output_mode = data.get("output_mode", "VISUAL").upper()
@@ -202,6 +226,16 @@ class ExerciseSocketServer:
 
         print(f"[DEBUG][LIVE_INIT] Mode: {mode} | Output: {self.output_mode} | Exercise: {exercise_name}")
         data_manager = self._prepare_data_manager(data, live_timing=True)
+=======
+        target_reps = int(data.get("target_reps", 10))
+        cam_idx = int(data.get("camera_index", 0))
+        self.output_mode = data.get("output_mode", "VISUAL").upper()
+
+        print(f"[DEBUG][LIVE_INIT] Mode: {mode} | Output: {self.output_mode} | Exercise: {exercise_name}")
+        self.start_camera(cam_idx)
+
+        data_manager = DataManager(player_id=player_id, patient_name=patient_name)
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
         exercise_config = load_exercise_config(exercise_name)
 
         custom_thresholds = None
@@ -211,7 +245,11 @@ class ExerciseSocketServer:
         if custom_thresholds and "left" not in custom_thresholds and "start_val" in custom_thresholds:
             custom_thresholds = {"left": custom_thresholds, "right": custom_thresholds}
 
+<<<<<<< HEAD
         effective_reps = 3 if mode == "CALIBRATION" else target_score
+=======
+        effective_reps = 3 if mode == "CALIBRATION" else target_reps
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
         motion_engine = MotionEngine(
             config=exercise_config,
@@ -225,6 +263,7 @@ class ExerciseSocketServer:
             data_manager=data_manager,
             motion_engine=motion_engine
         )
+<<<<<<< HEAD
         self.filter_engine = OneEuroKeypointFilter()
         self._reset_raw_buffers()
         self.start_camera(cam_idx)
@@ -250,10 +289,15 @@ class ExerciseSocketServer:
         await websocket.send(json.dumps({"type": "SESSION_MEASUREMENT_STARTED",
                                          "message": "준비 시간이 끝나 측정을 시작합니다."}))
         return True
+=======
+        self.filter_engine = RealtimeEMAFilter(max_jump=0.15, alpha=0.6)
+        self._reset_raw_buffers()
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
     def _reset_raw_buffers(self):
         if self.controller and self.controller.data_manager:
             dm = self.controller.data_manager
+<<<<<<< HEAD
             dm.buf_timestamps = dm.session_log.timestamps
             dm.buf_values = dm.session_log.values
             dm.buf_raw_keypoints = dm.session_log.keypoints
@@ -379,6 +423,19 @@ class ExerciseSocketServer:
             return
 
         print(f"\n[MODE 3: VIDEO_BATCH] Processing '{video_path}' (Batch: {batch_size}, Mode: {mode})")
+=======
+            dm.buf_timestamps = []
+            dm.buf_values = []
+            dm.buf_raw_keypoints = []
+
+    def _append_to_buffers(self, left_data: dict, right_data: dict, raw_keypoints: list, elapsed_sec: float = None):
+        if not raw_keypoints or len(raw_keypoints) < 17:
+            return
+
+        raw_kpt_matrix = [[kp["x"], kp["y"], kp.get("score", 0.0)] for kp in raw_keypoints]
+        if elapsed_sec is None:
+            elapsed_sec = round(time.time() - self.controller.timer_start, 3)
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
         await websocket.send(json.dumps({
             "type": "VIDEO_STATUS",
@@ -386,11 +443,18 @@ class ExerciseSocketServer:
             "message": "비디오를 고속 배치 분석 중입니다. 잠시만 기다려주세요..."
         }))
 
+<<<<<<< HEAD
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             cap.release()
             await websocket.send(json.dumps({"type": "ERROR", "message": f"비디오 파일을 열 수 없습니다: {video_path}"}))
             return
+=======
+    def _save_session_files(self, prefix: str = "SESSION") -> dict:
+        dm = self.controller.data_manager
+        if not dm or not getattr(dm, "buf_timestamps", []):
+            return None
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         fps = fps if np.isfinite(fps) and fps > 0 else 30.0
@@ -417,6 +481,7 @@ class ExerciseSocketServer:
         )
         setattr(motion_engine, "exercise_name", exercise_name)
 
+<<<<<<< HEAD
         self.controller = SessionController(data_manager=data_manager, motion_engine=motion_engine)
         self.filter_engine = OneEuroKeypointFilter()
         self._reset_raw_buffers()
@@ -517,6 +582,125 @@ class ExerciseSocketServer:
 
         if stop_request:
             payload["status"] = "COMPLETED" if stop_request.get("reason") == "TARGET_REACHED" else "STOPPED"
+=======
+        return {
+            "session_id": f"{prefix}_{session_id}",
+            "prefix": prefix,
+            "saved_frames": len(dm.buf_timestamps),
+            "saved_reps_count": saved_reps
+        }
+
+    # ==========================================================================
+    # [모드 3] 비디오 분석 방식 (OFFLINE_VIDEO): 배치 GPU 가속 검증
+    # ==========================================================================
+    async def process_offline_video(self, websocket, data: dict):
+        video_path = data.get("video_path") or data.get("input_source")
+        player_id = data.get("player_id", "patient_1")
+        patient_name = data.get("patient_name", "Unknown")
+        exercise_name = data.get("exercise_name", "biceps_curl")
+        mode = data.get("mode", "CALIBRATION")
+        target_reps = int(data.get("target_reps", 10))
+        batch_size = int(data.get("batch_size", 16))
+
+        print(f"\n[MODE 3: VIDEO_BATCH] Processing '{video_path}' (Batch: {batch_size}, Mode: {mode})")
+
+        await websocket.send(json.dumps({
+            "type": "VIDEO_STATUS",
+            "status": "PROCESSING",
+            "message": "비디오를 고속 배치 분석 중입니다. 잠시만 기다려주세요..."
+        }))
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            await websocket.send(json.dumps({"type": "ERROR", "message": f"비디오 파일을 열 수 없습니다: {video_path}"}))
+            return
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_duration = 1.0 / fps
+
+        data_manager = DataManager(player_id=player_id, patient_name=patient_name)
+        exercise_config = load_exercise_config(exercise_name)
+        custom_thresholds = data_manager.get_custom_threshold(exercise_name) if mode in ["MAIN", "TEST"] else None
+        if custom_thresholds and "left" not in custom_thresholds and "start_val" in custom_thresholds:
+            custom_thresholds = {"left": custom_thresholds, "right": custom_thresholds}
+
+        effective_reps = 3 if mode == "CALIBRATION" else target_reps
+        motion_engine = MotionEngine(
+            config=exercise_config,
+            custom_thresholds=custom_thresholds,
+            mode=mode,
+            target_reps=effective_reps
+        )
+        setattr(motion_engine, "exercise_name", exercise_name)
+
+        self.controller = SessionController(data_manager=data_manager, motion_engine=motion_engine)
+        self._reset_raw_buffers()
+
+        # Step 1: 전체 프레임 GPU 고속 배치 키포인트 추출
+        all_extracted_keypoints = []
+        batch_frames = []
+        t_start = time.time()
+
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                if batch_frames:
+                    kpts_batch = await asyncio.to_thread(self.skeleton_engine.extract_keypoints_batch, batch_frames)
+                    all_extracted_keypoints.extend(kpts_batch)
+                break
+
+            batch_frames.append(frame)
+            if len(batch_frames) >= batch_size:
+                kpts_batch = await asyncio.to_thread(self.skeleton_engine.extract_keypoints_batch, batch_frames)
+                all_extracted_keypoints.extend(kpts_batch)
+                batch_frames.clear()
+
+        cap.release()
+        print(f"[MODE 3: VIDEO_BATCH] Extracted {len(all_extracted_keypoints)} frames in {time.time() - t_start:.2f}s")
+
+        # Step 2: 프레임 누락 없는 순차 FSM 판정 (양측 3회 완수 검사)
+        self.controller.timer_start = 0.0
+
+        for frame_idx, raw_kpts in enumerate(all_extracted_keypoints):
+            virtual_time = frame_idx * frame_duration
+            is_occluded = self.controller.check_occlusion(raw_kpts) if raw_kpts else True
+
+            if mode == "CALIBRATION":
+                cal_res = self.controller.process_calibration_frame(raw_kpts, is_occluded, now=virtual_time)
+                if cal_res["calib_step"] in ["COLLECTING", "COOLDOWN"] and not is_occluded and raw_kpts:
+                    vl = self.controller.calib_vals_left[-1] if self.controller.calib_vals_left else 0.0
+                    vr = self.controller.calib_vals_right[-1] if self.controller.calib_vals_right else 0.0
+                    self._append_to_buffers({"val": vl}, {"val": vr}, raw_kpts, elapsed_sec=virtual_time)
+
+                if cal_res["calib_step"] == "FINISHED":
+                    print(f"[MODE 3: VIDEO_BATCH] 양측 캘리브레이션 3회 완수 완료 (Frame: {frame_idx}/{total_frames})")
+                    break
+
+            elif mode in ["MAIN", "TEST"]:
+                left_data, right_data, is_finished = self.controller.process_main_frame(raw_kpts, is_occluded, now=virtual_time)
+                if not is_occluded and raw_kpts:
+                    self._append_to_buffers(left_data, right_data, raw_kpts, elapsed_sec=virtual_time)
+
+                if is_finished:
+                    print(f"[MODE 3: VIDEO_BATCH] Target reps 완수 완료 (Frame: {frame_idx}/{total_frames})")
+                    break
+
+        # Step 3: 파일 저장 및 완료 결과 일괄 전송
+        prefix = "CALIB" if mode == "CALIBRATION" else "SESSION"
+        summary_meta = self._save_session_files(prefix=prefix)
+
+        payload = {
+            "type": "VIDEO_ANALYSIS_COMPLETED",
+            "mode": mode,
+            "video_path": video_path,
+            "total_frames_analyzed": len(all_extracted_keypoints),
+            "summary": summary_meta
+        }
+        if mode == "CALIBRATION":
+            payload["thresholds"] = self.controller.compute_and_save_thresholds(exercise_name)
+
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
         await websocket.send(json.dumps(payload))
         print(f"[MODE 3: VIDEO_BATCH] Completed successfully.")
         self.controller = None
@@ -538,6 +722,7 @@ class ExerciseSocketServer:
 
         try:
             while True:
+<<<<<<< HEAD
                 status = self.model_loader.snapshot()
                 status_key = (status["model_state"], status["phase"], status.get("model_error"))
                 if status_key != last_model_status:
@@ -558,12 +743,15 @@ class ExerciseSocketServer:
                         for command in pending_commands:
                             await websocket.send(json.dumps(handle_count_threshold_command(self.controller, command)))
                     pending_commands.clear()
+=======
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
                 try:
                     raw_msg = await asyncio.wait_for(websocket.recv(), timeout=0.01)
                     packet = json.loads(raw_msg)
                     pkt_type = packet.get("type")
 
                     if pkt_type == "CMD_SET_SESSION":
+<<<<<<< HEAD
                         pending_session = packet
                         pending_commands.clear()
                         if not self.model_loader.snapshot()["ready"]:
@@ -608,6 +796,24 @@ class ExerciseSocketServer:
                         await asyncio.sleep(0.01)
                         continue
                     ret, frame, sample_time, capture_id = self.camera.read_sample()
+=======
+                        video_path = packet.get("video_path") or packet.get("input_source")
+                        if video_path and os.path.isfile(str(video_path)):
+                            await self.process_offline_video(websocket, packet)
+                            continue
+                        else:
+                            self.init_live_session(packet)
+
+                    elif pkt_type == "CMD_STOP_CALIBRATION":
+                        if self.controller and self.controller.mode == "CALIBRATION":
+                            self.controller.calib_step = "FINISHED"
+
+                except asyncio.TimeoutError:
+                    pass
+
+                if self.controller and self.camera:
+                    ret, frame = self.camera.read()
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
                     if (ret and frame is not None and capture_id != self._last_capture_id
                             and sample_time >= self._session_started):
@@ -627,9 +833,14 @@ class ExerciseSocketServer:
                                 return base64.b64encode(buf).decode("utf-8")
                             self.last_frame_b64 = await asyncio.to_thread(encode_frame, frame)
 
+<<<<<<< HEAD
                         # Use the camera timestamp for filtering/logs as well as video.
                         raw_kpts = await asyncio.to_thread(self.skeleton_engine.extract_keypoints, frame)
                         filtered_kpts = self.filter_engine.update(raw_kpts, timestamp=sample_time)
+=======
+                        raw_kpts = await asyncio.to_thread(self.skeleton_engine.extract_keypoints, frame)
+                        filtered_kpts = self.filter_engine.update(raw_kpts)
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
                         yolo_detected = filtered_kpts is not None and len(filtered_kpts) > 0
                         is_occluded = self.controller.check_occlusion(filtered_kpts) if yolo_detected else True
 
@@ -647,12 +858,23 @@ class ExerciseSocketServer:
                             calib_reps_left = cal_res["calib_reps_left"]
                             calib_reps_right = cal_res["calib_reps_right"]
 
+<<<<<<< HEAD
                             left_data, right_data = self.controller.last_left_data, self.controller.last_right_data
                             self._append_to_buffers(left_data, right_data, raw_kpts, elapsed_sec=log_elapsed,
                                 is_occluded=is_occluded, video_frame_idx=video_index)
 
                             if cal_res["calib_step"] == "FINISHED":
                                 ex_name = getattr(self.controller.motion_engine, "exercise_name", "biceps_curl")
+=======
+                            if cal_res["calib_step"] in ["COLLECTING", "COOLDOWN"] and not is_occluded and raw_kpts:
+                                vl = self.controller.calib_vals_left[-1] if self.controller.calib_vals_left else 0.0
+                                vr = self.controller.calib_vals_right[-1] if self.controller.calib_vals_right else 0.0
+                                self._append_to_buffers({"val": vl}, {"val": vr}, raw_kpts)
+
+                            if cal_res["calib_step"] == "FINISHED":
+                                ex_name = getattr(self.controller.motion_engine, "exercise_name", "biceps_curl")
+                                calib_summary = self._save_session_files(prefix="CALIB")
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
                                 custom_th = self.controller.compute_and_save_thresholds(ex_name)
                                 calib_summary = self._save_session_files(prefix="CALIB")
 
@@ -670,11 +892,26 @@ class ExerciseSocketServer:
                         # --- TEST / MAIN 진행 ---
                         elif current_mode in ["MAIN", "TEST"]:
                             left_data, right_data, is_finished = self.controller.process_main_frame(filtered_kpts, is_occluded)
+<<<<<<< HEAD
                             self._append_to_buffers(left_data, right_data, raw_kpts, elapsed_sec=log_elapsed,
                                 is_occluded=is_occluded, video_frame_idx=video_index)
 
                             await self._send_rep_events(websocket, left_data, right_data, log_elapsed)
 
+=======
+                            if not is_occluded and raw_kpts:
+                                self._append_to_buffers(left_data, right_data, raw_kpts)
+
+                            if is_finished:
+                                test_summary = self._save_session_files(prefix="SESSION")
+                                await websocket.send(json.dumps({
+                                    "type": "SESSION_FINISHED",
+                                    "summary": test_summary
+                                }))
+                                self.controller = None
+                                continue
+
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
                         # --- 패킷 송출 (모드 1 vs 모드 2) ---
                         if self.output_mode == "VISUAL":
                             pose_payload = {
@@ -708,15 +945,25 @@ class ExerciseSocketServer:
                                 "target_calib_reps": 3,
                             }
 
+<<<<<<< HEAD
                         pose_payload.update(self.controller.motion_engine.count_threshold_status())
+=======
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
                         await websocket.send(json.dumps(pose_payload))
 
                 await asyncio.sleep(0.001)
 
         except ConnectionClosed:
             print(f"[DEBUG][NETWORK] Client disconnected: {client_address}")
+<<<<<<< HEAD
         except Exception as e:
             end_status = "FAILED"
+=======
+            if self.controller:
+                prefix = "CALIB" if self.controller.mode == "CALIBRATION" else "SESSION"
+                self._save_session_files(prefix=prefix)
+        except Exception as e:
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
             print(f"[ERROR][SERVER] Exception: {e}")
             traceback.print_exc()
             try:
@@ -741,6 +988,7 @@ class ExerciseSocketServer:
                     self._session_owner = None
 
     async def run(self):
+<<<<<<< HEAD
         async with websockets.serve(self.handle_client, self.host, self.port) as listener:
             self.bound_port = listener.sockets[0].getsockname()[1]
             print(f"[DEBUG][SERVER] ExerciseSocketServer listening on ws://{self.host}:{self.bound_port}", flush=True)
@@ -753,6 +1001,11 @@ class ExerciseSocketServer:
                 if task is not None and not task.done():
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
+=======
+        async with websockets.serve(self.handle_client, self.host, self.port):
+            print(f"[DEBUG][SERVER] ExerciseSocketServer listening on ws://{self.host}:{self.port}")
+            await asyncio.Future()
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
 
 if __name__ == "__main__":
@@ -760,4 +1013,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(server.run())
     except KeyboardInterrupt:
+<<<<<<< HEAD
         print("\n[DEBUG][SERVER] Server stopped by user.")
+=======
+        print("\n[DEBUG][SERVER] Server stopped by user.")
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0

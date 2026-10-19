@@ -5,16 +5,23 @@
 #       - 조기 카운트 방지: 65% 통과 즉시 카운트되는 로직 제거
 #       - 유효 동작 기준: 가동 범위 40% 이상 도달 확인
 #       - 변곡점 판정: 정점(Peak) 대비 가동 범위의 5% 이상 꺾여 내려올 때 카운트 트리거
+<<<<<<< HEAD
 #       - ANGLE, COORDINATE, LENGTH, RATIO(두 관절 간 거리의 비율) 지원
+=======
+#       - ANGLE, RELATIVE_Y, DISTANCE(정규화된 관절 간 거리) 지원
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 # ==============================================================================
 
 import math
 from numbers import Real
 import numpy as np
 
+<<<<<<< HEAD
 QUALITY_POINTS = {'PERFECT': 1.0, 'GOOD': 0.5, 'BAD': 0.25}
 QUALITY_CODES = {'PERFECT': 3, 'GOOD': 2, 'BAD': 1}
 
+=======
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
 class SideFSM:
     def __init__(self, side_name: str, motion_direction: str, thresholds: dict, target_reps: int = 10,
@@ -100,10 +107,16 @@ class SideFSM:
         is_count_updated = False
 
         # 2. 목표 횟수를 이미 채운 경우: 카운트 증가 FSM만 스킵하고 실시간 게이지는 계속 반환
+<<<<<<< HEAD
         if self.target_reached:
             self.state = "WAITING"
             return {
                 **self.score_status(),
+=======
+        if self.rep_count >= self.target_reps:
+            self.state = "WAITING"
+            return {
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
                 "state": "WAITING",
                 "rep_count": self.rep_count,
                 "progress_ratio": progress_ratio,  # <-- 멈추지 않고 실시간 움직임 반영
@@ -161,10 +174,16 @@ class SideFSM:
                     "threshold_version": self.threshold_version,
                 })
 
+<<<<<<< HEAD
                 print(f"\n[PEAK REVERSAL COUNT!] {self.side.upper()} Reps: {self.rep_count} | "
                       f"Score: {self.total_score:g}/{self.target_score:g} | Quality: {quality} (Peak: {peak_val:.2f})")
 
                 self.state = "WAITING" if self.target_reached else "RETURNING"
+=======
+                print(f"\n[PEAK REVERSAL COUNT!] {self.side.upper()} Rep: {self.rep_count}/{self.target_reps} | Quality: {quality} (Peak: {peak_val:.2f})")
+
+                self.state = "WAITING" if self.rep_count >= self.target_reps else "RETURNING"
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
         # ----------------------------------------------------------------------
         # 3. 복귀 확인 및 락 해제 (30% 이하로 돌아와야 다음 횟수 준비)
@@ -303,13 +322,43 @@ class MotionEngine:
         cosine = np.clip(np.dot(v1, v2) / (norm_v1 * norm_v2), -1.0, 1.0)
         return round(math.degrees(np.arccos(cosine)), 2)
 
+<<<<<<< HEAD
     def _valid_points(self, ids, kpt_map, confidence=.35):
         points = [kpt_map.get(i) for i in ids]
         if not points or not all(p and p.get('score', 0.) >= confidence
                 and all(math.isfinite(p[axis]) for axis in ('x', 'y')) for p in points):
+=======
+    def _get_torso_scale(self, kpt_map: dict) -> float:
+        """카메라 거리에 무관한 신체 비율 기준치 계산 (어깨 중심과 골반 중심 간 거리)"""
+        # COCO: Left Shoulder=5, Right Shoulder=6, Left Hip=11, Right Hip=12
+        ls, rs = kpt_map.get(5), kpt_map.get(6)
+        lh, rh = kpt_map.get(11), kpt_map.get(12)
+
+        if ls and rs and lh and rh:
+            shoulder_mid_y = (ls["y"] + rs["y"]) / 2.0
+            shoulder_mid_x = (ls["x"] + rs["x"]) / 2.0
+            hip_mid_y = (lh["y"] + rh["y"]) / 2.0
+            hip_mid_x = (lh["x"] + rh["x"]) / 2.0
+            torso_len = math.hypot(shoulder_mid_x - hip_mid_x, shoulder_mid_y - hip_mid_y)
+            if torso_len > 10.0:  # 유효한 픽셀 크기인지 확인
+                return torso_len
+
+        return 200.0  # 기본 스케일 fallback (정규화용 분모)
+
+    def _compute_side_value(self, side: str, kpt_map: dict) -> float:
+        eval_cfg = self.config.get("eval_config", {})
+
+        # 1. Y축 상대 높이 기반
+        if self.metric_type == "RELATIVE_Y":
+            target_id = eval_cfg.get("target_kpt", {}).get(side)
+            target_kp = kpt_map.get(target_id)
+            if target_kp and target_kp.get("score", 0.0) >= 0.35:
+                return round(float(target_kp["y"]), 3)
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
             return None
         return points
 
+<<<<<<< HEAD
     def _compute_angle(self, side, kpt_map):
         ids = self.config.get('eval_config', {}).get('primary_kpts', {}).get(side, [])
         points = self._valid_points(ids, kpt_map, .4)
@@ -332,6 +381,28 @@ class MotionEngine:
             reference, target = pair
         points = self._valid_points([target] + ([reference] if reference is not None else []), kpt_map)
         if not points:
+=======
+        # 2. 거리 기반 (무릎-발목 간 정규화 거리)
+        elif self.metric_type == "DISTANCE":
+            p_indices = eval_cfg.get("primary_kpts", {}).get(side, [])
+            if len(p_indices) >= 2:
+                kp1 = kpt_map.get(p_indices[0])
+                kp2 = kpt_map.get(p_indices[1])
+
+                if kp1 and kp2 and kp1.get("score", 0.0) >= 0.35 and kp2.get("score", 0.0) >= 0.35:
+                    raw_dist = math.hypot(kp1["x"] - kp2["x"], kp1["y"] - kp2["y"])
+                    scale = self._get_torso_scale(kpt_map)
+                    normalized_dist = raw_dist / scale
+                    return round(float(normalized_dist), 3)
+            return None
+
+        # 3. 3관절 사이 각도 기반 (기본값)
+        else:
+            p_indices = eval_cfg.get("primary_kpts", {}).get(side, [])
+            pts = [kpt_map.get(i) for i in p_indices if kpt_map.get(i)]
+            if len(pts) == 3 and all(p.get("score", 0.0) >= 0.4 for p in pts):
+                return self._calculate_angle(pts[0], pts[1], pts[2])
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
             return None
         return round(float(points[0][axis] - (points[1][axis] if reference is not None else 0.)), 4)
 

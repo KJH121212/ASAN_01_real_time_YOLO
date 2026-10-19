@@ -18,6 +18,10 @@ __pycache__/
 
 # data 통제
 data/
+<<<<<<< HEAD
 recordings/
 logs/
 test_video/
+=======
+recordings/
+>>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
