@@ -97,9 +97,3 @@ class PoseNormalizer:
             })
 
         return normalized_list
-
-
-# 함수형 인터페이스 호환용 래퍼
-def normalize_pelvis_centered(keypoints: list, invert_y: bool = False) -> list:
-    normalizer = PoseNormalizer(invert_y=invert_y)
-    return normalizer.normalize(keypoints)

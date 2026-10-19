@@ -5,13 +5,26 @@
       "exercise_name": "biceps_curl",
       "display_name_kr": "이두 굴곡 (Biceps Curl)",
       "eval_config": {
-        "metric_type": "RELATIVE_Y",
+        "metric_type": "COORDINATE",
         "motion_direction": "INCREASING",
-        "target_kpt": { "left": 9, "right": 10 }
+        "target_kpt": {
+          "left": 9,
+          "right": 10
+        },
+        "axis": "y"
       },
       "default_thresholds": {
-        "left": { "start_val": 0.1, "target_val": 0.9 },
-        "right": { "start_val": 0.1, "target_val": 0.9 }
+        "left": {
+          "start_val": 0.1,
+          "target_val": 0.9
+        },
+        "right": {
+          "start_val": 0.1,
+          "target_val": 0.9
+        }
+      },
+      "calibration_config": {
+        "rest_seconds": 0.5
       }
     },
     "shoulder_press": {
@@ -21,13 +34,30 @@
         "metric_type": "ANGLE",
         "motion_direction": "INCREASING",
         "primary_kpts": {
-          "left": [5, 7, 9],
-          "right": [6 ,8, 10]
+          "left": [
+            5,
+            7,
+            9
+          ],
+          "right": [
+            6,
+            8,
+            10
+          ]
         }
       },
       "default_thresholds": {
-        "left": { "start_val": 15.0, "target_val": 160.0 },
-        "right": { "start_val": 15.0, "target_val": 160.0 }
+        "left": {
+          "start_val": 45.0,
+          "target_val": 160.0
+        },
+        "right": {
+          "start_val": 45.0,
+          "target_val": 160.0
+        }
+      },
+      "calibration_config": {
+        "rest_seconds": 0.5
       }
     },
     "clamshell": {
@@ -37,26 +67,56 @@
         "metric_type": "ANGLE",
         "motion_direction": "INCREASING",
         "primary_kpts": {
-          "left": [12, 11, 13],
-          "right": [11, 12, 14]
+          "left": [
+            12,
+            11,
+            13
+          ],
+          "right": [
+            11,
+            12,
+            14
+          ]
         }
       },
       "default_thresholds": {
-        "left": { "start_val": 90.0, "target_val": 160.0 },
-        "right": { "start_val": 90.0, "target_val": 160.0 }
+        "left": {
+          "start_val": 90.0,
+          "target_val": 160.0
+        },
+        "right": {
+          "start_val": 90.0,
+          "target_val": 160.0
+        }
+      },
+      "calibration_config": {
+        "rest_seconds": 0.5
       }
     },
     "slr": {
       "exercise_name": "slr",
       "display_name_kr": "하지 직거상 (Straight Leg Raise)",
       "eval_config": {
-        "metric_type": "RELATIVE_Y",
+        "metric_type": "COORDINATE",
         "motion_direction": "INCREASING",
-        "target_kpt": { "left": 15, "right": 16 }
+        "target_kpt": {
+          "left": 15,
+          "right": 16
+        },
+        "axis": "y"
       },
       "default_thresholds": {
-        "left": { "start_val": -1.2, "target_val": 1.2 },
-        "right": { "start_val": -1.2, "target_val": 1.2 }
+        "left": {
+          "start_val": -1.2,
+          "target_val": 1.2
+        },
+        "right": {
+          "start_val": -1.2,
+          "target_val": 1.2
+        }
+      },
+      "calibration_config": {
+        "rest_seconds": 0.5
       }
     },
     "hip_knee_flexion": {
@@ -66,29 +126,78 @@
         "metric_type": "ANGLE",
         "motion_direction": "DECREASING",
         "primary_kpts": {
-          "left": [5, 11, 13],
-          "right": [6, 12, 14]
+          "left": [
+            5,
+            11,
+            13
+          ],
+          "right": [
+            6,
+            12,
+            14
+          ]
         }
       },
       "default_thresholds": {
-        "left": { "start_val": 180.0, "target_val": 15.0 },
-        "right": { "start_val": 180.0, "target_val": 15.0 }
+        "left": {
+          "start_val": 180.0,
+          "target_val": 15.0
+        },
+        "right": {
+          "start_val": 180.0,
+          "target_val": 15.0
+        }
+      },
+      "calibration_config": {
+        "rest_seconds": 0.5
       }
     },
     "knee_extension": {
       "exercise_name": "knee_extension",
+      "calibration_config": {
+        "rest_seconds": 0.5,
+        "min_rise": 0.08,
+        "noise_multiplier": 6.0,
+        "hold_seconds": 0.15,
+        "return_seconds": 0.15,
+        "max_cycle_seconds": 10.0
+      },
       "display_name_kr": "슬관절 신전 (Knee Extension)",
       "eval_config": {
-        "metric_type": "DISTANCE",
-        "motion_direction": "DECREASING",
-        "primary_kpts": {
-          "left": [13, 15],
-          "right": [14, 16]
+        "metric_type": "RATIO",
+        "motion_direction": "AUTO",
+        "numerator_kpts": {
+          "left": [
+            13,
+            15
+          ],
+          "right": [
+            14,
+            16
+          ]
+        },
+        "denominator_kpts": {
+          "left": [
+            11,
+            13
+          ],
+          "right": [
+            12,
+            14
+          ]
         }
       },
       "default_thresholds": {
-        "left": { "start_val": 0.8, "target_val": 0.0 },
-        "right": { "start_val": 0.8, "target_val": 0.0 }
+        "left": {
+          "start_val": 1.0,
+          "target_val": 0.7,
+          "motion_direction": "DECREASING"
+        },
+        "right": {
+          "start_val": 1.0,
+          "target_val": 0.7,
+          "motion_direction": "DECREASING"
+        }
       }
     }
   }

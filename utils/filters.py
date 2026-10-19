@@ -1,89 +1,112 @@
 # ==============================================================================
 # [Module Information]
 # File: utils/filters.py
-# Description: Real-time temporal smoothing filter with adaptive jump clamping
-#              and Exponential Moving Average (EMA) for joint jitter reduction.
+# Description: Timestamp-aware One Euro smoothing and the legacy EMA filter.
 # ==============================================================================
 
-import numpy as np
+import math
+import time
 
 
-class RealtimeEMAFilter:
+
+class OneEuroFilter:
+    """Adaptive low-pass filter for one scalar; timestamps are in seconds.
+
+    Algorithm: https://github.com/casiez/OneEuroFilter
+    Lower min_cutoff reduces resting jitter; higher beta reduces motion lag.
     """
-    프레임 간 비정상적인 관절 튐(Jitter) 현상을 유클리디안 거리 기준으로 클램핑하고
-    지수 이동 평균(EMA)을 통해 시계열 잔떨림을 완화하는 실시간 필터.
-    """
 
-    def __init__(self, max_jump: float = 0.35, alpha: float = 0.85):
-        """
-        Args:
-            max_jump: 단일 프레임 간 허용되는 최대 유클리디안 변위 거리 (0.15 -> 0.35 완화)
-            alpha: 현재 프레임 반영 비율 (0.6 -> 0.85 상향: 최신 프레임 민감도 극대화)
-        """
-        self.max_jump = max_jump
-        self.alpha = alpha
-        self.prev_kpts = None  # 직전 프레임 유효 관절 배열 Shape: (17, 2)
-        print(f"[DEBUG][FILTER_INIT] EMA Filter updated. Max Jump: {self.max_jump}, Alpha: {self.alpha}")
-
-    def update(self, current_kpts: list) -> list:
-        """
-        17개 관절 좌표 리스트에 필터를 적용하여 노이즈가 제거된 리스트를 반환합니다.
-
-        Args:
-            current_kpts: [{'id': int, 'x': float, 'y': float, 'score': float}, ...]
-        Returns:
-            list: 평활화된 관절 좌표 리스트
-        """
-        if not current_kpts or len(current_kpts) < 17:
-            return current_kpts
-
-        # 관절 배열 추출: Shape (17, 3) -> [x, y, score]
-        kpt_array = np.array(
-            [[kp["x"], kp["y"], kp.get("score", 0.0)] for kp in current_kpts],
-            dtype=np.float32
-        )
-        curr_coords = kpt_array[:, :2]
-        scores = kpt_array[:, 2]
-
-        # 1. 최초 진입 시 초기화 버퍼 생성
-        if self.prev_kpts is None:
-            self.prev_kpts = curr_coords.copy()
-            return current_kpts
-
-        smoothed_list = []
-
-        # 2. 17개 관절별 독립 시계열 필터링 수행
-        for i in range(17):
-            curr_pt = curr_coords[i].copy()
-            prev_pt = self.prev_kpts[i].copy()
-            score = scores[i]
-
-            # 신뢰도가 매우 낮거나 좌표가 0인 결측 상황 처리
-            if score < 0.15 or np.all(curr_pt == 0.0):
-                curr_pt = prev_pt
-            else:
-                displacement = float(np.linalg.norm(curr_pt - prev_pt))
-                
-                # 명백한 순간이동 노이즈(0.35 이상)에 대해서만 클램핑
-                if displacement > self.max_jump:
-                    curr_pt = prev_pt + (curr_pt - prev_pt) * (self.max_jump / displacement)
-
-                # EMA(지수 이동 평균) 가중치 적용 (현재 프레임 85% 반영)
-                curr_pt = self.alpha * curr_pt + (1.0 - self.alpha) * prev_pt
-
-            # 다음 프레임 연산을 위해 캐시 최신화
-            self.prev_kpts[i] = curr_pt
-
-            smoothed_list.append({
-                "id": i,
-                "x": round(float(curr_pt[0]), 4),
-                "y": round(float(curr_pt[1]), 4),
-                "score": round(float(score), 3)
-            })
-
-        return smoothed_list
+    def __init__(self, min_cutoff=1.0, beta=0.1, d_cutoff=1.0, max_gap=0.5):
+        params = (min_cutoff, beta, d_cutoff, max_gap)
+        if not all(math.isfinite(p) for p in params):
+            raise ValueError("Filter parameters must be finite")
+        if min_cutoff <= 0 or beta < 0 or d_cutoff <= 0 or max_gap <= 0:
+            raise ValueError("Cutoffs/max_gap must be positive and beta nonnegative")
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.max_gap = max_gap
+        self.reset()
 
     def reset(self):
-        """연속성이 단절되거나 세션이 변경될 때 이전 프레임 캐시를 초기화합니다."""
-        self.prev_kpts = None
-        print("[DEBUG][FILTER] Filter history cache flushed.")
+        self.timestamp = None
+        self.raw_value = None
+        self.filtered_value = None
+        self.filtered_derivative = 0.0
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        r = 2.0 * math.pi * cutoff * dt
+        return r / (1.0 + r)
+
+    def update(self, value, timestamp):
+        if not math.isfinite(value) or not math.isfinite(timestamp):
+            raise ValueError("Value and timestamp must be finite")
+        dt = timestamp - self.timestamp if self.timestamp is not None else None
+        if dt is None or dt <= 0 or dt > self.max_gap:
+            # A new stream or a discontinuity must not interpolate stale poses.
+            self.filtered_value = value
+            self.filtered_derivative = 0.0
+        else:
+            derivative = (value - self.raw_value) / dt
+            a_d = self._alpha(self.d_cutoff, dt)
+            self.filtered_derivative += a_d * (derivative - self.filtered_derivative)
+            cutoff = self.min_cutoff + self.beta * abs(self.filtered_derivative)
+            a = self._alpha(cutoff, dt)
+            self.filtered_value += a * (value - self.filtered_value)
+        self.timestamp = timestamp
+        self.raw_value = value
+        return self.filtered_value
+
+
+class OneEuroKeypointFilter:
+    """Filter each joint's x/y independently in SkeletonEngine's [0, 1] space.
+
+    Joint identity comes from COCO id, not list position. Scores are preserved;
+    missing/low-confidence joints discard history rather than inventing a pose.
+    """
+
+    def __init__(self, min_cutoff=1.0, beta=0.1, d_cutoff=1.0,
+                 conf_threshold=0.35, max_gap=0.5):
+        self.params = dict(min_cutoff=min_cutoff, beta=beta,
+                           d_cutoff=d_cutoff, max_gap=max_gap)
+        OneEuroFilter(**self.params)  # Validate even before the first frame.
+        if not math.isfinite(conf_threshold) or not 0 <= conf_threshold <= 1:
+            raise ValueError("conf_threshold must be between 0 and 1")
+        self.conf_threshold = conf_threshold
+        self.reset()
+
+    def reset(self):
+        self.filters = {}
+
+    def update(self, current_kpts, timestamp=None):
+        if not current_kpts:
+            self.reset()
+            return current_kpts
+        if timestamp is None:
+            timestamp = time.perf_counter()
+        if not math.isfinite(timestamp):
+            raise ValueError("Timestamp must be finite")
+
+        result = []
+        valid_ids = set()
+        for kp in current_kpts:
+            point = dict(kp)
+            joint_id = kp["id"]
+            score = kp.get("score", 0.0)
+            finite = all(math.isfinite(kp[axis]) for axis in ("x", "y"))
+            if not finite or not math.isfinite(score):
+                point.update(x=0.0, y=0.0, score=0.0)
+            elif score >= self.conf_threshold:
+                valid_ids.add(joint_id)
+                if joint_id not in self.filters:
+                    self.filters[joint_id] = (
+                        OneEuroFilter(**self.params), OneEuroFilter(**self.params)
+                    )
+                fx, fy = self.filters[joint_id]
+                point["x"] = fx.update(kp["x"], timestamp)
+                point["y"] = fy.update(kp["y"], timestamp)
+            result.append(point)
+
+        self.filters = {i: f for i, f in self.filters.items() if i in valid_ids}
+        return result

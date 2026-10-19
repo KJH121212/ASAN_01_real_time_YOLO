@@ -7,11 +7,10 @@
 
 import csv
 import json
-import os
 from datetime import datetime
 from pathlib import Path
-import traceback
 import numpy as np
+from core.session_log import KST, SessionLog, default_log_root, path_component, write_json_atomic
 
 
 def load_exercise_config(exercise_name: str) -> dict:
@@ -39,7 +38,7 @@ def load_exercise_config(exercise_name: str) -> dict:
     fallback = {
         "exercise_name": exercise_name,
         "eval_config": {
-            "metric_type": "RELATIVE_Y",
+            "metric_type": "COORDINATE",
             "motion_direction": "DECREASING",
         },
         "default_thresholds": {
@@ -52,177 +51,94 @@ def load_exercise_config(exercise_name: str) -> dict:
 
 
 class DataManager:
-    """환자 프로필, 임계값 이력, 운동 성과 CSV 및 순수 원본 관절 궤적(NPZ) I/O 클래스"""
+    """Patient profiles and session logs under a configurable external root."""
 
-    def __init__(self, player_id: str = "patient_1", patient_name: str = "Unknown"):
-        self.player_id = player_id
+    def __init__(self, player_id="patient_1", patient_name="Unknown", log_root=None, patient_metadata=None):
+        self.player_id = path_component(player_id, "patient_id")
         self.patient_name = patient_name
-
-        project_root = Path(__file__).resolve().parent.parent
-        self.patient_dir = (project_root / "data" / player_id).resolve()
-        self.skeleton_dir = (self.patient_dir / "skeleton_memory").resolve()
-
-        # 필요한 하위 디렉터리 사전 생성
+        self.log_root = Path(log_root).expanduser().resolve() if log_root else default_log_root()
+        for directory in (self.log_root, *self.log_root.parents):
+            if directory.exists() and not directory.is_dir():
+                raise NotADirectoryError(
+                    f"로그 저장 폴더는 영상 파일이 아닌 폴더로 지정하세요: {directory}. "
+                    "영상 경로는 Video File Path에 입력하세요.")
+        self.patient_dir = self.log_root / self.player_id
         self.patient_dir.mkdir(parents=True, exist_ok=True)
-        self.skeleton_dir.mkdir(parents=True, exist_ok=True)
+        self.json_path = self.patient_dir / f"{self.player_id}.json"
+        self.metadata_path = self.patient_dir / "patient_metadata.csv"
+        self.legacy_json_path = Path(__file__).resolve().parent.parent / "data" / self.player_id / f"{self.player_id}.json"
+        self.patient_metadata = patient_metadata or {}
+        if not isinstance(self.patient_metadata, dict):
+            raise ValueError("patient_metadata must be an object")
+        self.session_log = None
+        self.buf_timestamps, self.buf_values, self.buf_raw_keypoints = [], [], []
+        print(f"[LOG] Patient directory: {self.patient_dir}", flush=True)
 
-        self.json_path = self.patient_dir / f"{player_id}.json"
-        self.csv_path = self.patient_dir / "rep_details.csv"
+    def _save_metadata(self):
+        fields = ["patient_id", "patient_name", "height_cm", "weight_kg"]
+        metadata = {}
+        if self.metadata_path.exists():
+            with self.metadata_path.open(newline="", encoding="utf-8-sig") as file:
+                metadata = next(csv.DictReader(file), {})
+        metadata.update(patient_id=self.player_id, patient_name=self.patient_name)
+        for key in ("height_cm", "weight_kg"):
+            if key in self.patient_metadata and self.patient_metadata[key] is not None:
+                value = float(self.patient_metadata[key])
+                if not np.isfinite(value) or value <= 0:
+                    raise ValueError(f"{key} must be positive")
+                metadata[key] = value
+        temporary = self.metadata_path.with_suffix(".csv.tmp")
+        try:
+            with temporary.open("w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.DictWriter(file, fieldnames=fields, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerow(metadata)
+            temporary.replace(self.metadata_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
-        print(f"[DEBUG][INIT] DataManager initialized for Player: {self.player_id}")
-        print(f"[DEBUG][INIT] Patient Directory: {self.patient_dir}")
-        print(f"[DEBUG][INIT] Skeleton Storage Directory: {self.skeleton_dir}")
+    def begin_session(self, exercise_name, mode, session=None, round_number=1, set_number=1,
+                      record_video=False, video_fps=30.0, started_at=None, target_score=None):
+        if self.session_log is not None and self.session_log._summary is None:
+            raise RuntimeError("Finish the active log before starting another")
+        self._save_metadata()
+        self.session_log = SessionLog(self.patient_dir, exercise_name, mode, session,
+                                      round_number, set_number, record_video, video_fps, started_at, target_score)
+        self.buf_timestamps = self.session_log.timestamps
+        self.buf_values = self.session_log.values
+        self.buf_raw_keypoints = self.session_log.keypoints
+        print(f"[LOG] Session files: {self.session_log.base}.*", flush=True)
+        return dict(self.session_log.info)
 
-    def save_custom_threshold(self, exercise_name: str, threshold_data: dict, is_confirmed: bool = True):
-        """캘리브레이션 결과로 산출된 임계값을 JSON 프로필에 원자적(Atomic)으로 기록합니다."""
-        print(f"[DEBUG][IO] Writing custom threshold profile for '{exercise_name}'...")
+    def save_custom_threshold(self, exercise_name, threshold_data, is_confirmed=True):
         data = {}
-
-        if self.json_path.exists():
-            try:
-                with open(self.json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception as e:
-                print(f"[ERROR][IO] Existing profile JSON corrupted. Resetting data. Cause: {e}")
-                data = {}
-
-        data["patient_id"] = self.player_id
-        data["patient_name"] = self.patient_name
-
-        if "custom_thresholds" not in data or not isinstance(data["custom_thresholds"], dict):
-            data["custom_thresholds"] = {}
-        if "calibration_history" not in data or not isinstance(data["calibration_history"], list):
-            data["calibration_history"] = []
-
-        data["custom_thresholds"][exercise_name] = threshold_data
-
-        history_entry = {
+        # Preserve the previous profile when writing the first new calibration.
+        source = self.json_path if self.json_path.exists() else self.legacy_json_path
+        if source.exists():
+            data = json.loads(source.read_text(encoding="utf-8"))
+        data.update(patient_id=self.player_id, patient_name=self.patient_name)
+        data.setdefault("custom_thresholds", {})[exercise_name] = threshold_data
+        data.setdefault("calibration_history", []).append({
             "exercise_name": exercise_name,
-            "calibration_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "is_confirmed": is_confirmed,
-            "thresholds": threshold_data,
-        }
-        data["calibration_history"].append(history_entry)
+            "calibration_date": datetime.now(KST).isoformat(),
+            "is_confirmed": is_confirmed, "thresholds": threshold_data,
+        })
+        write_json_atomic(self.json_path, data)
 
-        # 쓰기 중단으로 인한 파일 깨짐 방지를 위한 원자적 교체(.tmp -> .json)
-        temp_path = self.patient_dir / f"{self.player_id}.json.tmp"
-        try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-            temp_path.replace(self.json_path)
-            print(f"[DEBUG][IO] Profile update successfully committed: {self.json_path}")
-        except Exception as e:
-            print(f"[ERROR][IO] Failed saving profile JSON: {e}")
-            traceback.print_exc()
-
-    def get_custom_threshold(self, exercise_name: str) -> dict:
-        """기존 JSON 파일에서 등록된 맞춤 가동 범위 임계값을 조회합니다."""
-        if not self.json_path.exists():
-            print(f"[DEBUG][IO] Profile file does not exist: {self.json_path}")
-            return None
-
-        try:
-            with open(self.json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                custom_th = data.get("custom_thresholds", {})
-                if exercise_name in custom_th:
-                    print(f"[DEBUG][IO] Found custom threshold for '{exercise_name}': {custom_th[exercise_name]}")
-                    return custom_th[exercise_name]
-                else:
-                    print(f"[DEBUG][IO] No custom threshold entry for exercise: {exercise_name}")
-        except Exception as e:
-            print(f"[ERROR][IO] Failed reading profile JSON: {e}")
-            traceback.print_exc()
-
+    def get_custom_threshold(self, exercise_name):
+        for source in (self.json_path, self.legacy_json_path):
+            if not source.exists():
+                continue
+            try:
+                profile = json.loads(source.read_text(encoding="utf-8"))
+                threshold = profile.get("custom_thresholds", {}).get(exercise_name)
+                if threshold is not None:
+                    return threshold
+            except (OSError, ValueError, AttributeError) as exc:
+                print(f"[WARN][LOG] Could not read profile {source}: {exc}")
         return None
 
-    def save_rep_details_csv(self, rep_rows: list):
-        """운동 세션 중 완수한 반복 회차(Repetition)의 정량 통계를 CSV에 누적 추가합니다."""
-        if not rep_rows:
-            print("[DEBUG][IO] Rep rows buffer is empty. Skipping CSV write.")
-            return
-
-        fieldnames = [
-            "session_id", "timestamp", "side", "rep_num", "duration_sec",
-            "min_angle", "max_angle", "achieved_rom", "quality"
-        ]
-
-        file_exists = self.csv_path.exists()
-        try:
-            with open(self.csv_path, "a", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-                if not file_exists:
-                    writer.writeheader()
-                    print(f"[DEBUG][IO] Created new CSV header: {self.csv_path}")
-                for row in rep_rows:
-                    writer.writerow(row)
-
-            print(f"[DEBUG][IO] Appended {len(rep_rows)} rows to CSV: {self.csv_path}")
-        except Exception as e:
-            print(f"[ERROR][IO] Failed writing to CSV: {e}")
-            traceback.print_exc()
-
-    def save_raw_trajectory_npz(
-        self,
-        session_id: str,
-        exercise_name: str,
-        timestamps: list,
-        values: list,
-        raw_keypoints: list,
-        prefix: str = "SESSION"
-    ):
-        """
-        후처리가 전혀 적용되지 않은 순수 원본 17개 관절 시계열 좌표 행렬을 
-        운동 종목별 하위 디렉터리에 NPZ로 압축 저장합니다.
-        """
-        if not timestamps or not raw_keypoints:
-            print("[DEBUG][IO] Trajectory buffer is empty. Aborting raw NPZ export.")
-            return
-
-        # [수정] 운동 종목별 전용 하위 디렉터리 경로 설정 및 자동 생성
-        exercise_dir = self.skeleton_dir / exercise_name
-        exercise_dir.mkdir(parents=True, exist_ok=True)
-
-        # 파일명 조립: {prefix}_{session_id}_skeleton.npz
-        npz_filename = f"{prefix}_{session_id}_skeleton.npz"
-        npz_path = exercise_dir / npz_filename
-
-        try:
-            ts_array = np.array(timestamps, dtype=np.float32)
-            val_array = np.array(values, dtype=np.float32)
-            kpt_array = np.array(raw_keypoints, dtype=np.float32)
-
-            print(f"[DEBUG][IO] Exporting RAW NPZ trajectory: {npz_path}")
-            print(f"       Exercise Subdirectory: {exercise_dir}")
-            print(f"       Prefix: {prefix}")
-            print(f"       Timestamps Shape: {ts_array.shape}")
-            print(f"       Values Shape: {val_array.shape}")
-            print(f"       Raw Keypoints Shape: {kpt_array.shape}")
-
-            np.savez_compressed(
-                npz_path,
-                timestamps=ts_array,
-                values=val_array,
-                keypoints=kpt_array,
-                player_id=self.player_id,
-                exercise_name=exercise_name,
-                session_type=prefix
-            )
-
-            file_size_kb = round(os.path.getsize(npz_path) / 1024.0, 2)
-            print(f"[DEBUG][IO] Raw NPZ archive committed successfully. Size: {file_size_kb} KB")
-
-        except Exception as e:
-            print(f"[ERROR][IO] Failed saving raw NPZ file: {e}")
-            traceback.print_exc()
-
-    # 하위 호환성을 위한 기존 시그니처 래핑
-    def save_trajectory_npz(self, session_id: str, exercise_name: str, timestamps: list, values: list, keypoints: list):
-        self.save_raw_trajectory_npz(
-            session_id=session_id,
-            exercise_name=exercise_name,
-            timestamps=timestamps,
-            values=values,
-            raw_keypoints=keypoints,
-            prefix="SESSION"
-        )
+    def finish_session(self, rep_rows, status="COMPLETED", end_elapsed_sec=None):
+        if self.session_log is None:
+            return None
+        return self.session_log.finish(rep_rows, status, end_elapsed_sec=end_elapsed_sec)

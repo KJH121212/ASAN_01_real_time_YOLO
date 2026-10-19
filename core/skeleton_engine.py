@@ -35,6 +35,8 @@ torch.load = _patched_torch_load  # 전역 패치 적용
 
 from mmpose.apis.inference import init_model, inference_topdown  # MMPose 추론 API 로드
 from mmpose.utils import register_all_modules  # 커스텀 모듈 레지스트리 등록 함수 로드
+from mmengine.dataset import Compose, pseudo_collate
+from mmengine.registry import init_default_scope
 from ultralytics import YOLO  # 사람 객체 탐지를 위한 YOLO 로드
 
 register_all_modules()  # MMPose 모듈 안전 등록
@@ -42,7 +44,9 @@ register_all_modules()  # MMPose 모듈 안전 등록
 
 class SkeletonEngine:  # 실시간 관절 포인트 추출을 전담하는 메인 AI 엔진 클래스 선언
 
-    def __init__(self, device: str = None, yolo_interval: int = 5):  # 엔진 초기화 생성자 및 기본 프레임 주기 설정
+    def __init__(self, device: str = None, yolo_interval: int = 5, on_progress=None):
+        report = on_progress or (lambda phase: None)
+        report('DEVICE_SETUP')
         if device is None:  # 명시적으로 디바이스가 전달되지 않은 경우
             self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'  # GPU 가용성을 확인하여 자동으로 디바이스 할당
         else:  # 디바이스가 외부에서 명시된 경우
@@ -53,12 +57,90 @@ class SkeletonEngine:  # 실시간 관절 포인트 추출을 전담하는 메�
         config_path = str(root_dir / "configs" / "checkpoints" / "RTMPose_config.py")  # RTMPose 모델 구조 설정 파일의 절대 경로 조립
         checkpoint_path = str(root_dir / "configs" / "checkpoints" / "RTMPose.pth")  # RTMPose 학습 가중치 파일의 절대 경로 조립
 
+        report('LOADING_YOLO')
         self.detector = YOLO(yolo_path)  # 지정된 경로의 가중치로 YOLOv8 사람 탐지기 객체 생성 및 메모리 로드
+        report('LOADING_POSE')
         self.pose_model = init_model(config_path, checkpoint_path, device=self.device)  # 지정된 디바이스 메모리에 RTMPose 모델 초기화
         
         self.yolo_interval = yolo_interval  # YOLO 추론을 건너뛰어 성능을 최적화할 프레임 간격 저장
         self.frame_count = 0  # 시스템에서 누적 처리된 프레임 수를 기록할 카운터 초기화
         self.cached_center_bbox = None  # 직전 프레임에서 확정된 대상자 바운딩 박스 영역 캐시 초기화
+        self._batch_pose_pipeline = None
+
+    @staticmethod
+    def _select_center_bbox(detection, frame):
+        """Select one confident person per frame, without borrowing another frame's bbox."""
+        if detection.boxes is None or len(detection.boxes) == 0:
+            return None
+        boxes = detection.boxes.xyxy.cpu().numpy()
+        scores = detection.boxes.conf.cpu().numpy()
+        h, w = frame.shape[:2]
+        candidates = []
+        for box, score in zip(boxes, scores):
+            if score <= 0.4 or not np.isfinite(score) or not np.all(np.isfinite(box)):
+                continue
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            distance = ((box[0] + box[2]) / 2 - w / 2) ** 2 + ((box[1] + box[3]) / 2 - h / 2) ** 2
+            candidates.append((distance, box))
+        if not candidates:
+            return None
+        return np.asarray(min(candidates, key=lambda candidate: candidate[0])[1], dtype=np.float32)
+
+    @staticmethod
+    def _format_keypoints(pose_result, frame):
+        h, w = frame.shape[:2]
+        predicted = pose_result.pred_instances
+        if len(predicted.keypoints) == 0:
+            return None
+        kpts, scores = predicted.keypoints[0], predicted.keypoint_scores[0]
+        return [{"id": i, "x": round(float(kpts[i][0] / w), 4),
+                 "y": round(float(kpts[i][1] / h), 4), "score": round(float(scores[i]), 3)}
+                for i in range(17)]
+
+    @torch.no_grad()
+    def extract_keypoints_batch(self, frames: list) -> list:
+        """Batch YOLO and RTMPose while preserving one result slot per input.
+
+        Missing frames/people produce None at their original index. Offline
+        detection is independent of the realtime bbox cache and batch size.
+        """
+        if not frames:
+            return []
+        output = [None] * len(frames)
+        valid_indices = [i for i, frame in enumerate(frames) if frame is not None]
+        if not valid_indices:
+            return output
+        images = [frames[i] for i in valid_indices]
+        detections = self.detector(images, classes=[0], imgsz=320, verbose=False, device=self.device)
+        if len(detections) != len(images):
+            raise RuntimeError("YOLO batch result count does not match the input frame count")
+
+        # Follow the installed MMPose inference_topdown preprocessing, but
+        # collate crops from DIFFERENT frames into a single model.test_step.
+        scope = self.pose_model.cfg.get('default_scope', 'mmpose')
+        if scope is not None:
+            init_default_scope(scope)
+        if self._batch_pose_pipeline is None:
+            self._batch_pose_pipeline = Compose(self.pose_model.cfg.test_dataloader.dataset.pipeline)
+        samples, sample_indices = [], []
+        for index, detection in zip(valid_indices, detections):
+            bbox = self._select_center_bbox(detection, frames[index])
+            if bbox is None:
+                continue
+            data = dict(img=frames[index], bbox=bbox[None], bbox_score=np.ones(1, dtype=np.float32))
+            data.update(self.pose_model.dataset_meta)
+            sample = self._batch_pose_pipeline(data)
+            if sample is not None:
+                samples.append(sample)
+                sample_indices.append(index)
+        if samples:
+            poses = self.pose_model.test_step(pseudo_collate(samples))
+            if len(poses) != len(sample_indices):
+                raise RuntimeError("RTMPose batch result count does not match the detected frame count")
+            for index, pose in zip(sample_indices, poses):
+                output[index] = self._format_keypoints(pose, frames[index])
+        return output
 
     @torch.no_grad()  # 추론 과정에서 역전파용 기울기 연산을 차단하여 메모리를 절약하고 속도를 극대화
     def extract_keypoints(self, frame: np.ndarray) -> list:  # RGB/BGR 이미지 배열을 받아 관절 좌표 리스트를 반환하는 메서드
