@@ -97,7 +97,6 @@
       "exercise_name": "slr",
       "display_name_kr": "하지 직거상 (Straight Leg Raise)",
       "eval_config": {
-<<<<<<< HEAD
         "metric_type": "COORDINATE",
         "motion_direction": "INCREASING",
         "target_kpt": {
@@ -118,15 +117,6 @@
       },
       "calibration_config": {
         "rest_seconds": 0.5
-=======
-        "metric_type": "RELATIVE_Y",
-        "motion_direction": "INCREASING",
-        "target_kpt": { "left": 15, "right": 16 }
-      },
-      "default_thresholds": {
-        "left": { "start_val": -1.2, "target_val": 1.2 },
-        "right": { "start_val": -1.2, "target_val": 1.2 }
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
       }
     },
     "hip_knee_flexion": {
@@ -174,7 +164,6 @@
       },
       "display_name_kr": "슬관절 신전 (Knee Extension)",
       "eval_config": {
-<<<<<<< HEAD
         "metric_type": "RATIO",
         "motion_direction": "AUTO",
         "numerator_kpts": {
@@ -209,18 +198,6 @@
           "target_val": 0.7,
           "motion_direction": "DECREASING"
         }
-=======
-        "metric_type": "DISTANCE",
-        "motion_direction": "DECREASING",
-        "primary_kpts": {
-          "left": [13, 15],
-          "right": [14, 16]
-        }
-      },
-      "default_thresholds": {
-        "left": { "start_val": 0.8, "target_val": 0.0 },
-        "right": { "start_val": 0.8, "target_val": 0.0 }
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
       }
     }
   }

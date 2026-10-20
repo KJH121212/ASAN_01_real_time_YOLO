@@ -197,7 +197,6 @@ class SessionController:
             "quality": "CALIBRATING",
         }
         print(f"[DEBUG][CONTROLLER] Initialized successfully. Target Calib Reps per side: {self.target_calib_reps}")
-<<<<<<< HEAD
 
     def update_count_thresholds(self, thresholds: dict) -> list:
         changed_sides = self.motion_engine.update_count_thresholds(thresholds)
@@ -211,8 +210,6 @@ class SessionController:
                          progress_ratio=round(min(1.0, max(0.0, ratio)), 2),
                          quality=fsm.last_quality, is_count_updated=False)
         return changed_sides
-=======
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
     def check_occlusion(self, keypoints: list) -> bool:
         if not keypoints or len(keypoints) < 17:
@@ -230,7 +227,6 @@ class SessionController:
                     required_ids.add(value)
         return not all(kpt_map.get(i, 0.0) >= 0.35 for i in required_ids)
 
-<<<<<<< HEAD
     def process_calibration_frame(self, keypoints, is_occluded, now=None):
         now = time.time() if now is None else now
         detectors = self.calibration_detectors
@@ -278,125 +274,6 @@ class SessionController:
                     self.timer_start = now
                 elif now - self.timer_start >= 1.0:
                     self.calib_step = 'FINISHED'
-=======
-    def process_calibration_frame(self, raw_keypoints: list, is_occluded: bool, now: float = None) -> dict:
-        if now is None:
-            now = time.time()
-
-        if is_occluded:
-            if self.calib_step not in ["FULL_BODY_CHECK", "FINISHED"]:
-                print("[WARN][CALIB] Occlusion detected. Resetting to FULL_BODY_CHECK.")
-            self.calib_step = "FULL_BODY_CHECK"
-            self.timer_start = 0.0
-            self.calib_vals_left.clear()
-            self.calib_vals_right.clear()
-            self.calib_reps_left = 0
-            self.calib_reps_right = 0
-            if self.motion_engine:
-                self.motion_engine.fsm_left.rep_count = 0
-                self.motion_engine.fsm_right.rep_count = 0
-                self.motion_engine.fsm_left.state = "READY"
-                self.motion_engine.fsm_right.state = "READY"
-            return {
-                "calib_step": self.calib_step,
-                "calib_rep_count": 0,
-                "calib_reps_left": 0,
-                "calib_reps_right": 0,
-                "target_calib_reps": self.target_calib_reps
-            }
-
-        # 1. 전신 감지 대기
-        if self.calib_step == "FULL_BODY_CHECK":
-            self.calib_step = "COUNTDOWN"
-            self.timer_start = now
-            print("[DEBUG][CALIB] Full body detected. Starting 3-second countdown.")
-
-        # 2. 3초 카운트다운
-        elif self.calib_step == "COUNTDOWN":
-            elapsed = now - self.timer_start
-            if elapsed >= 3.0:
-                self.calib_step = "COLLECTING"
-                self.timer_start = now
-                self.calib_reps_left = 0
-                self.calib_reps_right = 0
-                print(f"[DEBUG][CALIB] Countdown finished. Collecting {self.target_calib_reps} active repetitions on BOTH sides.")
-
-        # 3. 데이터 수집 및 양측 완료 판정
-        if self.motion_engine and raw_keypoints:
-            norm_keypoints = self.normalizer.normalize(raw_keypoints)
-            if norm_keypoints:
-                kpt_map = {kp["id"]: kp for kp in norm_keypoints}
-                vl = self.motion_engine._compute_side_value("left", kpt_map)
-                vr = self.motion_engine._compute_side_value("right", kpt_map)
-
-                res_l = self.motion_engine.fsm_left.update(vl)
-                res_r = self.motion_engine.fsm_right.update(vr)
-
-                # 실시간 패킷 캐시 갱신
-                self.last_left_data = {**res_l, "val": vl}
-                self.last_right_data = {**res_r, "val": vr}
-
-                # 수집 중일 때
-                if self.calib_step == "COLLECTING":
-                    if vl is not None:
-                        self.calib_vals_left.append(vl)
-                    if vr is not None:
-                        self.calib_vals_right.append(vr)
-
-                    self.calib_reps_left = res_l["rep_count"]
-                    self.calib_reps_right = res_r["rep_count"]
-
-                    # [핵심 수정] 좌/우측 둘 다 target_calib_reps(3회) 이상 완수해야만 COOLDOWN 진입
-                    both_sides_completed = (
-                        self.calib_reps_left >= self.target_calib_reps and
-                        self.calib_reps_right >= self.target_calib_reps
-                    )
-
-                    if both_sides_completed:
-                        self.calib_step = "COOLDOWN"
-                        self.timer_start = now
-                        print(f"[CALIB COMPLETE] 양측 모두 {self.target_calib_reps}회 완수 (L:{self.calib_reps_left}, R:{self.calib_reps_right})! 1초간 마무리 프레임 수집...")
-
-                # 양측 모두 3회 달성 후 1.0초간 추가 버퍼링 유지
-                elif self.calib_step == "COOLDOWN":
-                    if vl is not None:
-                        self.calib_vals_left.append(vl)
-                    if vr is not None:
-                        self.calib_vals_right.append(vr)
-
-                    if now - self.timer_start >= 1.0:
-                        self.calib_step = "FINISHED"
-                        print("[CALIB FINISHED] 1초 쿨다운 종료. 양측 캘리브레이션을 확정합니다.")
-
-        # 통합 횟수 표시는 둘 중 작은 값(최소 달성 횟수)을 기준으로 표기 (둘 다 3이 되어야 3/3 표시)
-        min_completed_reps = min(self.calib_reps_left, self.calib_reps_right)
-
-        return {
-            "calib_step": self.calib_step,
-            "calib_rep_count": min_completed_reps,
-            "calib_reps_left": self.calib_reps_left,
-            "calib_reps_right": self.calib_reps_right,
-            "target_calib_reps": self.target_calib_reps
-        }
-
-    def compute_and_save_thresholds(self, exercise_name: str) -> dict:
-        def _calc_side(values: list, side: str) -> dict:
-            def_th = self.motion_engine.config.get("default_thresholds", {}).get(side, {})
-            fb_start = def_th.get("start_val", 0.15)
-            fb_target = def_th.get("target_val", 0.80)
-
-            if not values or len(values) < 15:
-                return {"start_val": fb_start, "target_val": fb_target}
-
-            p_min = float(np.percentile(values, 5))
-            p_max = float(np.percentile(values, 95))
-
-            if self.motion_engine and self.motion_engine.motion_direction == "DECREASING":
-                return {
-                    "start_val": round(p_max, 2),
-                    "target_val": round(p_max - (p_max - p_min) * 0.85, 2)
-                }
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
             else:
                 self.calib_step = 'COLLECTING'
         return dict(calib_step=self.calib_step, calib_rep_count=min(self.calib_reps_left, self.calib_reps_right),
@@ -411,20 +288,12 @@ class SessionController:
             self.data_manager.save_custom_threshold(exercise_name, thresholds, is_confirmed=True)
         return thresholds
 
-<<<<<<< HEAD
     def process_main_frame(self, raw_keypoints: list, is_occluded: bool, now: float = None) -> tuple:
         """본 운동 측정과 판정만 처리; 종료 여부는 클라이언트가 결정"""
-=======
-        return custom_th
-
-    def process_main_frame(self, raw_keypoints: list, is_occluded: bool, now: float = None) -> tuple:
-        """본 운동 세션 프레임 처리 (목표 달성 후 1.5초 쿨다운 유지)"""
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
         if now is None:
             now = time.time()
 
         if is_occluded or not raw_keypoints:
-<<<<<<< HEAD
             return ({**self.last_left_data, 'score': 0, 'score_delta': 0.0, 'is_count_updated': False},
                     {**self.last_right_data, 'score': 0, 'score_delta': 0.0, 'is_count_updated': False}, False)
 
@@ -437,39 +306,10 @@ class SessionController:
         if not result:
             return ({**self.last_left_data, 'score': 0, 'score_delta': 0.0, 'is_count_updated': False},
                     {**self.last_right_data, 'score': 0, 'score_delta': 0.0, 'is_count_updated': False}, False)
-=======
-            return self.last_left_data.copy(), self.last_right_data.copy(), False
-
-        norm_keypoints = self.normalizer.normalize(raw_keypoints)
-        if not norm_keypoints:
-            return self.last_left_data.copy(), self.last_right_data.copy(), False
-
-        result = self.motion_engine.process_keypoints(norm_keypoints)
-        if not result:
-            return self.last_left_data.copy(), self.last_right_data.copy(), False
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0
 
         left_data, right_data = result["left"], result["right"]
         self.last_left_data = left_data.copy()
         self.last_right_data = right_data.copy()
 
-<<<<<<< HEAD
         # A client stop command, not a score threshold, ends MAIN/TEST.
         return left_data, right_data, False
-=======
-        target_reps = self.motion_engine.fsm_left.target_reps if self.motion_engine else 10
-        reps_reached = (left_data["rep_count"] >= target_reps or right_data["rep_count"] >= target_reps)
-
-        is_finished = False
-
-        if reps_reached:
-            if self.test_finish_timer is None:
-                self.test_finish_timer = now
-                print(f"[DEBUG][TEST] 목표 횟수({target_reps}회) 달성! 1.5초 쿨다운 유지 후 종료합니다.")
-
-            if now - self.test_finish_timer >= 1.5:
-                is_finished = True
-                print("[DEBUG][TEST] 1.5초 쿨다운 종료. 세션 데이터를 저장합니다.")
-
-        return left_data, right_data, is_finished
->>>>>>> b6c8a449ef52f485f67941f73fc858f4e076adb0

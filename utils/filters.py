@@ -66,7 +66,8 @@ class OneEuroKeypointFilter:
     missing/low-confidence joints discard history rather than inventing a pose.
     """
 
-    def __init__(self, min_cutoff=1.0, beta=0.1, d_cutoff=1.0,
+    # Faster tracking in normalized image coordinates; retain mild jitter suppression.
+    def __init__(self, min_cutoff=3.0, beta=0.5, d_cutoff=1.0,
                  conf_threshold=0.35, max_gap=0.5):
         self.params = dict(min_cutoff=min_cutoff, beta=beta,
                            d_cutoff=d_cutoff, max_gap=max_gap)
