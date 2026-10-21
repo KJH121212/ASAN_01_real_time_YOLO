@@ -24,7 +24,9 @@ class CalibrationCycleDetector:
     """Shared calibration cycle logic for angle, coordinate, length and ratio signals."""
     def __init__(self, rest_seconds=0.5, min_rise=0.08, noise_multiplier=6.0,
                  hold_seconds=0.15, return_seconds=0.15, max_cycle_seconds=10.0,
-                 baseline_range=0.04, metric_type='COORDINATE', direction='INCREASING'):
+                 baseline_range=0.04, metric_type='COORDINATE', direction='INCREASING',
+                 min_baseline_samples=3, max_sample_gap=1.0, occlusion_reset_seconds=2.0,
+                 return_fraction=0.25, consistency_ratio=2.5):
         self.metric_type = metric_type
         self.configured_direction = direction
         self.rest_seconds = rest_seconds
@@ -34,10 +36,20 @@ class CalibrationCycleDetector:
         self.return_seconds = return_seconds
         self.max_cycle_seconds = max_cycle_seconds
         self.baseline_range = baseline_range
+        self.min_baseline_samples = min_baseline_samples
+        self.max_sample_gap = max_sample_gap
+        self.occlusion_reset_seconds = occlusion_reset_seconds
+        self.return_fraction = return_fraction
+        self.consistency_ratio = consistency_ratio
+        if isinstance(min_baseline_samples, bool) or not isinstance(min_baseline_samples, int) or min_baseline_samples < 3:
+            raise ValueError('min_baseline_samples must be an integer >= 3')
+        if not (0 < return_fraction < .5) or consistency_ratio < 1:
+            raise ValueError('return_fraction must be between 0 and .5; consistency_ratio must be >= 1')
         if direction not in {'INCREASING', 'DECREASING', 'AUTO'}:
             raise ValueError('Invalid calibration direction')
         if not all(math.isfinite(v) and v > 0 for v in (rest_seconds, min_rise, noise_multiplier,
-                   hold_seconds, return_seconds, max_cycle_seconds, baseline_range)):
+                   hold_seconds, return_seconds, max_cycle_seconds, baseline_range,
+                   max_sample_gap, occlusion_reset_seconds, return_fraction, consistency_ratio)):
             raise ValueError('Calibration parameters must be finite and positive')
         self.reset()
 
@@ -57,6 +69,8 @@ class CalibrationCycleDetector:
         self.returned = None
         self.peak = 0.0
         self.last_time = None
+        self.missing_since = None
+        self.ready_floor = 0.0
 
     @property
     def ready(self):
@@ -64,11 +78,30 @@ class CalibrationCycleDetector:
 
     @property
     def consistent(self):
-        return len(self.peaks) >= 3 and max(self.peaks[-3:]) <= 2.5 * min(self.peaks[-3:])
+        return len(self.peaks) >= 3 and max(self.peaks[-3:]) <= self.consistency_ratio * min(self.peaks[-3:])
+
+    @property
+    def return_tolerance(self):
+        tolerance = max(self.baseline_range, self.threshold * .4, self.peak * self.return_fraction)
+        return min(tolerance, self.peak * .5) if self.peak > 0 else tolerance
+
+    def status(self):
+        state = ('MISSING' if self.missing_since is not None else
+                 'COMPLETE' if self.consistent else
+                 'NEED_CONSISTENT_CYCLES' if len(self.peaks) >= 3 and self.state == 'READY' else self.state)
+        return dict(state=state, baseline=self.baseline, baseline_samples=len(self.samples),
+                    min_baseline_samples=self.min_baseline_samples, rest_seconds=self.rest_seconds,
+                    min_movement=self.threshold, return_tolerance=self.return_tolerance,
+                    completed_cycles=len(self.peaks), consistent=self.consistent,
+                    direction=self.direction)
 
     def update(self, value, now, allow_count=True):
         updated = False
         if value is None or not math.isfinite(value):
+            missing_since = self.missing_since if self.missing_since is not None else now
+            if now - missing_since >= self.occlusion_reset_seconds:
+                self.reset()
+            self.missing_since = missing_since
             # Missing data cannot complete a held ascent/return or bridge a rest window.
             self.samples.clear()
             self.state = 'READY' if self.ready else 'BASELINE'
@@ -76,20 +109,26 @@ class CalibrationCycleDetector:
             self.previous_value = None
             self.last_time = now
             return updated
-        if self.last_time is not None and (now <= self.last_time or now - self.last_time > .5):
+        if self.missing_since is not None and now - self.missing_since >= self.occlusion_reset_seconds:
+            self.reset()
+        self.missing_since = None
+        if self.last_time is not None and (now <= self.last_time or now - self.last_time > self.occlusion_reset_seconds):
+            self.reset()
+        if self.last_time is not None and now - self.last_time > self.max_sample_gap:
             self.samples.clear()
             self.state = 'READY' if self.ready else 'BASELINE'
             self.started = self.returned = None
         dt = now - self.last_time if self.last_time is not None else 0.
         self.velocity = ((value - self.previous_value) / dt
-                         if self.previous_value is not None and 0 < dt <= .5 else 0.)
+                         if self.previous_value is not None and 0 < dt <= self.max_sample_gap else 0.)
         self.previous_value = value
         self.last_time = now
         if not self.ready:
             self.samples.append((now, value))
-            while len(self.samples) > 1 and now - self.samples[1][0] >= self.rest_seconds:
+            # Retain enough samples at low FPS, while measuring rest in seconds.
+            while len(self.samples) > self.min_baseline_samples and now - self.samples[1][0] >= self.rest_seconds:
                 self.samples.popleft()
-            if len(self.samples) >= 15 and now - self.samples[0][0] >= self.rest_seconds:
+            if len(self.samples) >= self.min_baseline_samples and now - self.samples[0][0] >= self.rest_seconds:
                 values = [v for _, v in self.samples]
                 center = float(np.median(values))
                 noise = 1.4826 * float(np.median(np.abs(np.asarray(values) - center)))
@@ -107,11 +146,9 @@ class CalibrationCycleDetector:
         direction = self.candidate_direction if self.direction == 'AUTO' else self.direction
         sign = -1. if direction == 'DECREASING' else 1.
         rise = sign * displacement
-        speed = sign * self.velocity
-        if self.state == 'RETURNING' and speed < -self.threshold * .1:
-            self.reversing = True
         if self.state == 'READY':
-            if rise >= self.threshold:
+            self.ready_floor = min(self.ready_floor, rise)
+            if rise >= max(self.threshold, self.ready_floor + self.threshold):
                 self.reversing = False
                 self.state = 'RISING'
                 self.started = now
@@ -125,7 +162,9 @@ class CalibrationCycleDetector:
                     self.state = 'RETURNING'
         elif self.state == 'RETURNING':
             self.peak = max(self.peak, rise)
-            if self.reversing and rise <= self.threshold * .4:
+            if self.peak - rise >= max(self.threshold * .3, self.peak * .1):
+                self.reversing = True
+            if self.reversing and rise <= self.return_tolerance:
                 if self.returned is None:
                     self.returned = now
                 elif now - self.returned >= self.return_seconds:
@@ -133,6 +172,7 @@ class CalibrationCycleDetector:
                     if self.direction == 'AUTO':
                         self.direction = self.candidate_direction
                     self.state = 'READY'
+                    self.ready_floor = rise
                     self.returned = None
                     updated = True
             else:
@@ -230,11 +270,8 @@ class SessionController:
     def process_calibration_frame(self, keypoints, is_occluded, now=None):
         now = time.time() if now is None else now
         detectors = self.calibration_detectors
-        if is_occluded:
-            for detector in detectors.values():
-                detector.reset()
-            self.calib_step = 'FULL_BODY_CHECK'
         normalized = self.normalizer.normalize(keypoints) if keypoints and not is_occluded else None
+        is_occluded = is_occluded or not normalized
         points = {p['id']: p for p in normalized} if normalized else {}
         allow_count = all(d.ready for d in detectors.values()) and not is_occluded
         for side, detector in detectors.items():
@@ -244,6 +281,7 @@ class SessionController:
             direction = detector.candidate_direction if detector.direction == 'AUTO' else detector.direction
             sign = -1. if direction == 'DECREASING' else 1.
             cache = dict(val=value, rep_count=count, total_score=0.0, score_delta=0.0, score=0,
+                         calibration=detector.status(),
                          state=detector.state, quality='CALIBRATING', is_count_updated=updated,
                          progress_ratio=round(max(0., min(1., (value - detector.baseline) * sign / detector.threshold)), 2)
                          if value is not None and detector.ready else 0.)
@@ -262,9 +300,11 @@ class SessionController:
                     min_val=min(detector.baseline, endpoint), max_val=max(detector.baseline, endpoint),
                     achieved_rom=detector.peaks[-1], quality='CALIBRATING', score_delta=0., total_score=0.,
                     start_val=fsm.start_val, target_val=fsm.target_val, threshold_version=fsm.threshold_version))
-            if is_occluded:
+            if len(fsm.completed_reps_history) > count:
                 fsm.completed_reps_history.clear()
-        if not is_occluded:
+        if is_occluded:
+            self.calib_step = 'PAUSED' if any(d.ready for d in detectors.values()) else 'FULL_BODY_CHECK'
+        else:
             if not all(d.ready for d in detectors.values()):
                 self.calib_step = 'COUNTDOWN'
             elif all(d.consistent for d in detectors.values()) and all(
@@ -275,10 +315,12 @@ class SessionController:
                 elif now - self.timer_start >= 1.0:
                     self.calib_step = 'FINISHED'
             else:
-                self.calib_step = 'COLLECTING'
+                self.calib_step = ('CHECK_CONSISTENCY' if any(len(d.peaks) >= 3 and not d.consistent
+                                                            for d in detectors.values()) else 'COLLECTING')
         return dict(calib_step=self.calib_step, calib_rep_count=min(self.calib_reps_left, self.calib_reps_right),
                     calib_reps_left=self.calib_reps_left, calib_reps_right=self.calib_reps_right,
-                    target_calib_reps=self.target_calib_reps)
+                    target_calib_reps=self.target_calib_reps,
+                    calibration={side: detector.status() for side, detector in detectors.items()})
 
     def compute_and_save_thresholds(self, exercise_name: str) -> dict:
         if self.calib_step != 'FINISHED':

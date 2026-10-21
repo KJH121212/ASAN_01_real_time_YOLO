@@ -16,6 +16,61 @@ from network.session_commands import DEFAULT_PREPARATION_SECONDS, get_preparatio
 
 
 class CaptureTimestampTests(unittest.TestCase):
+    def test_phone_driver_can_fall_back_to_media_foundation(self):
+        first, second = Mock(), Mock()
+        first.isOpened.return_value = False
+        second.isOpened.return_value = True
+        second.read.return_value = (True, np.zeros((48, 24, 3), np.uint8))
+        with patch('network.socket_server.cv2.VideoCapture', side_effect=[first, second]) as opened:
+            camera = ThreadedWebcam(2)
+        try:
+            self.assertIs(camera.cap, second)
+            first.release.assert_called_once()
+            self.assertEqual(opened.call_args_list[0].args, (2, cv2.CAP_DSHOW))
+            self.assertEqual(opened.call_args_list[1].args, (2, cv2.CAP_MSMF))
+        finally:
+            camera.stop()
+
+    def test_camera_warmup_retries_before_switching_backend(self):
+        cap = Mock()
+        cap.isOpened.return_value = True
+        cap.read.side_effect = [(False, None), (True, np.empty((0, 0, 3))),
+                                (True, np.zeros((48, 24, 3), np.uint8))]
+        with patch('network.socket_server.cv2.VideoCapture', return_value=cap) as opened, \
+                patch('network.socket_server.time.sleep'):
+            camera = ThreadedWebcam()
+        try:
+            opened.assert_called_once()
+            self.assertEqual(camera.read_sample()[1].shape, (48, 24, 3))
+        finally:
+            camera.stop()
+
+    def test_no_camera_fails_explicitly_and_releases_both_backends(self):
+        caps = [Mock(), Mock()]
+        for cap in caps:
+            cap.isOpened.return_value = True
+            cap.read.return_value = (False, None)
+        with patch('network.socket_server.cv2.VideoCapture', side_effect=caps), \
+                patch('network.socket_server.time.sleep'), self.assertRaisesRegex(RuntimeError, '카메라 3'):
+            ThreadedWebcam(3)
+        for cap in caps:
+            cap.release.assert_called_once()
+
+    def test_native_read_error_is_reported_to_the_server_loop(self):
+        cap = Mock()
+        cap.isOpened.return_value = True
+        cap.read.return_value = (True, np.zeros((48, 24, 3), np.uint8))
+        with patch('network.socket_server.cv2.VideoCapture', return_value=cap):
+            camera = ThreadedWebcam()
+        try:
+            camera.started = True
+            cap.read.side_effect = cv2.error('phone disconnected')
+            camera.update()
+            with self.assertRaisesRegex(RuntimeError, 'phone disconnected'):
+                camera.read_sample()
+        finally:
+            camera.stop()
+
     def test_capture_time_is_attached_at_read_and_remains_stable_for_consumers(self):
         frame = np.zeros((24, 32, 3), dtype=np.uint8)
         cap = Mock()

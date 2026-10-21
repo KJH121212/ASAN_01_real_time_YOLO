@@ -156,6 +156,7 @@ class StreamlitAppTests(unittest.TestCase):
 
     def test_log_settings_are_sent_and_actual_server_path_is_displayed(self):
         with tempfile.TemporaryDirectory() as directory:
+            widget(self.app.number_input, '목표 점수 (Target Score)').set_value(40.0)
             widget(self.app.text_input, '로그 저장 폴더 (서버 기준)').set_value(directory)
             widget(self.app.number_input, 'Session').set_value(2)
             widget(self.app.number_input, 'Round').set_value(3)
@@ -177,6 +178,16 @@ class StreamlitAppTests(unittest.TestCase):
         client = self.start_session(visual=True)
         self.assertEqual(client.config['output_mode'], 'VISUAL')
         self.assertFalse(widget(self.app.button, '가동 범위 적용').disabled)
+
+    def test_broken_camera_image_shows_error_without_breaking_page(self):
+        client = self.start_session(visual=True)
+        pose = dict(client.snapshot()['pose'])
+        pose['frame_b64'] = 'invalid image base64!'
+        self.server.send(pose)
+        wait_for(lambda: client.snapshot()['pose'].get('frame_b64') == 'invalid image base64!')
+        self.app.run()
+        self.assert_no_ui_errors()
+        self.assertTrue(any('카메라 미리보기 처리 오류' in message.value for message in self.app.error))
 
     def test_model_loading_is_visible_then_session_starts_without_reconnecting(self):
         self.server.model_ready.clear()

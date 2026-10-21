@@ -78,7 +78,8 @@ class CaptureEngine:
         for index, points in enumerate(self.raw):
             for point in points or []:
                 matrix[index, point['id']] = [point['x'], point['y'], point['score']]
-        np.savez_compressed(path, keypoints=matrix, fps=fps)
+        aspects = [points[0].get('image_aspect_ratio', 1.0) if points else np.nan for points in self.raw]
+        np.savez_compressed(path, keypoints=matrix, fps=fps, image_aspect_ratio=aspects)
 
 
 class ResultSink:

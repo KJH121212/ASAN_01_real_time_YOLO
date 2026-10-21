@@ -11,6 +11,7 @@
 import base64
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 import queue
@@ -28,6 +29,7 @@ if root_dir not in sys.path:
 from utils.overlay_renderer import OverlayRenderer
 from network.streamlit_client import FINISH_PACKETS, StreamlitSessionClient
 from core.session_log import default_log_root
+from utils.image_geometry import letterbox_preview
 from network.session_commands import DEFAULT_PREPARATION_SECONDS
 
 
@@ -162,14 +164,14 @@ def render_pose_update(data, config, placeholders, renderer, packet_count=0, is_
     if config["output_mode"] == "VISUAL":
         img_b64 = data.get("frame_b64")
         canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+        keypoints = data.get("keypoints", [])
 
         if img_b64:
             img_bytes = base64.b64decode(img_b64)
             frame = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
             if frame is not None:
-                canvas = cv2.resize(frame, (640, 480))
+                canvas, keypoints = letterbox_preview(frame, keypoints)
 
-        keypoints = data.get("keypoints", [])
         canvas = renderer.draw_skeleton(
             canvas=canvas,
             keypoints=keypoints,
@@ -211,10 +213,14 @@ def render_pose_update(data, config, placeholders, renderer, packet_count=0, is_
     # 상단 알림 배너 갱신
     if current_mode == "CALIBRATION":
         if is_occluded:
-            placeholders["alert"].error("가림 감지: 신체가 화면 중앙에 온전히 나오도록 서주세요.")
+            placeholders["alert"].warning("검출 일시 중단: 시작 자세가 보이도록 해 주세요. 짧은 누락은 완료 횟수를 유지하며, 지속되면 초기 자세부터 다시 측정합니다.")
+        elif calib_step in ('COUNTDOWN', 'FULL_BODY_CHECK'):
+            placeholders['alert'].info('초기 자세 측정 중: 양쪽을 시작 자세로 유지하고 잠시 멈춰 주세요.')
+        elif calib_step == 'CHECK_CONSISTENCY':
+            placeholders['alert'].warning('반복 크기가 일정하지 않습니다. 비슷한 범위로 추가 반복하고 시작 자세로 복귀해 주세요.')
         elif calib_step == "COLLECTING":
             placeholders["alert"].info(
-                f"측정 진행 중 (양측 각각 3회) ➔ 왼쪽: {calib_reps_left}/{target_reps} | 오른쪽: {calib_reps_right}/{target_reps}"
+                f"측정 진행 중 (양측 각각 3회) ➔ 왼쪽: {calib_reps_left}/{target_reps} | 오른쪽: {calib_reps_right}/{target_reps}. 시작 자세로 복귀한 뒤 잠시 멈춰 주세요."
             )
         elif calib_step == "COOLDOWN":
             placeholders["alert"].success("양측 3회 달성 완수! 임계값 저장 중...")
@@ -229,8 +235,16 @@ def render_pose_update(data, config, placeholders, renderer, packet_count=0, is_
             placeholders["alert"].empty()
 
     rec_status = " | REC: ON" if is_recording else " | REC: OFF"
+    calibration_status = ''
+    if current_mode == 'CALIBRATION':
+        for label, side in (('L', left_info), ('R', right_info)):
+            detail = side.get('calibration', {})
+            if detail:
+                calibration_status += (f" | {label}: {detail.get('state', '')}"
+                    f" · 준비 샘플 {detail.get('baseline_samples', 0)}/{detail.get('min_baseline_samples', 3)}"
+                    f" · 복귀 허용 {detail.get('return_tolerance', 0):.3f}")
     placeholders["fps"].caption(
-        f"FPS: {fps_val:.1f} | Mode: {current_mode} ({config['output_mode']}){rec_status} | Packets: {packet_count}"
+        f"FPS: {fps_val:.1f} | Mode: {current_mode} ({config['output_mode']}){rec_status} | Packets: {packet_count}{calibration_status}"
     )
 
 
@@ -303,6 +317,7 @@ def render_rom_editor(client, status):
 
 @st.fragment(run_every=0.2)
 def refresh_session(client, placeholders, renderer):
+    client.touch_ui()
     pending_before = st.session_state.get("pending_rom_request")
     snapshot = client.snapshot()
     for packet in client.drain_events():
@@ -356,8 +371,12 @@ def refresh_session(client, placeholders, renderer):
 
     pose = snapshot["pose"]
     if pose:
-        render_pose_update(pose, client.config, placeholders, renderer,
-                           snapshot["packet_count"], client.config.get("record_video", False))
+        try:
+            render_pose_update(pose, client.config, placeholders, renderer,
+                               snapshot["packet_count"], client.config.get("record_video", False))
+        except (ValueError, TypeError, KeyError, OverflowError, cv2.error) as exc:
+            logging.getLogger(__name__).exception('Camera preview rendering failed')
+            placeholders['video'].error(f'카메라 미리보기 처리 오류: {exc}')
     else:
         placeholders["fps"].caption(f"연결 상태: {snapshot['status']}")
         server_status = snapshot.get("server_status")
@@ -495,7 +514,7 @@ def main():
                                session=int(session_number), round=int(round_number), set=int(set_number),
                                cal=mode == "CALIBRATION", record_video=save_video,
                                preparation_seconds=float(preparation_seconds))
-                    client = StreamlitSessionClient(uri, cfg)
+                    client = StreamlitSessionClient(uri, cfg, ui_heartbeat_timeout=10.0)
                     st.session_state.session_client = client
                     st.session_state.session_notice = None
                     st.session_state.rom_notice = None

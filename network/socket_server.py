@@ -39,19 +39,48 @@ from core.model_loader import BackgroundModelLoader
 from core.session_controller import SessionController
 from utils.filters import OneEuroKeypointFilter
 from utils.normalization import PoseNormalizer
+from utils.image_geometry import resize_within
 from network.session_commands import COUNT_THRESHOLD_COMMANDS, handle_count_threshold_command, get_preparation_seconds, get_target_score
 
 
 class ThreadedWebcam:
     """실시간 웹캠 최신 프레임 캡처 스레드 (모드 1, 모드 2 공용)"""
     def __init__(self, cam_idx=0):
-        self.cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.grabbed, self.frame = self.cap.read()
+        self.cap = None
+        # Phone/virtual webcam drivers may support only one Windows backend.
+        for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF):
+            cap = cv2.VideoCapture(cam_idx, backend)
+            try:
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    for _ in range(5):
+                        grabbed, frame = cap.read()
+                        if self._valid_frame(grabbed, frame):
+                            self.cap, self.grabbed, self.frame = cap, grabbed, frame
+                            break
+                        time.sleep(0.05)
+            except cv2.error as exc:
+                print(f'[WARN][CAMERA] Backend {backend} failed: {exc}', flush=True)
+            finally:
+                if self.cap is not cap:
+                    cap.release()
+            if self.cap is not None:
+                break
+        if self.cap is None:
+            raise RuntimeError(
+                f'카메라 {cam_idx}에서 영상을 읽을 수 없습니다 (DirectShow/Media Foundation). '
+                '휴대폰 웹캠 앱의 연결 상태와 카메라 번호를 확인하고, 카메라를 사용하는 다른 앱을 닫아 주세요.')
         self.captured_at = time.perf_counter()
+        self._last_valid_at = self.captured_at
+        self._capture_error = None
         self.frame_id = 0
         self.started = False
         self.read_lock = threading.Lock()
+
+    @staticmethod
+    def _valid_frame(grabbed, frame):
+        return (grabbed and isinstance(frame, np.ndarray) and frame.ndim == 3
+                and frame.shape[0] > 0 and frame.shape[1] > 0 and frame.shape[2] == 3)
 
     def start(self):
         if self.started:
@@ -63,13 +92,21 @@ class ThreadedWebcam:
 
     def update(self):
         while self.started:
-            grabbed, frame = self.cap.read()
+            try:
+                grabbed, frame = self.cap.read()
+            except cv2.error as exc:
+                with self.read_lock:
+                    self._capture_error = str(exc)
+                break
+            grabbed = self._valid_frame(grabbed, frame)
             captured_at = time.perf_counter()
             with self.read_lock:
                 self.grabbed = grabbed
                 self.frame = frame
                 self.captured_at = captured_at
                 self.frame_id += 1
+                if grabbed:
+                    self._last_valid_at = captured_at
             time.sleep(0.005)
 
     def read(self):
@@ -79,7 +116,11 @@ class ThreadedWebcam:
     def read_sample(self):
         """Return one atomic frame/timestamp/id snapshot from the capture thread."""
         with self.read_lock:
+            if self._capture_error:
+                raise RuntimeError(f'카메라 프레임 읽기 실패: {self._capture_error}')
             if not self.grabbed or self.frame is None:
+                if time.perf_counter() - self._last_valid_at >= 5.0:
+                    raise RuntimeError('카메라 영상이 5초 이상 끊겼습니다. 휴대폰 웹캠 연결을 확인해 주세요.')
                 return False, None, self.captured_at, self.frame_id
             return True, self.frame.copy(), self.captured_at, self.frame_id
 
@@ -136,7 +177,9 @@ class ExerciseSocketServer:
                     raise ValueError(f"비디오 파일을 찾을 수 없습니다: {video_path}")
                 await self.process_offline_video(websocket, packet)
             else:
-                self.init_live_session(packet)
+                await websocket.send(json.dumps({"type": "SESSION_PREPARING",
+                    "message": "카메라 연결 중입니다. 휴대폰 웹캠 앱의 연결 상태를 확인해 주세요."}))
+                await asyncio.to_thread(self.init_live_session, packet)
                 await websocket.send(json.dumps({
                     "type": "SESSION_LOG_STARTED", **self.controller.data_manager.session_log.info}))
         except ConnectionClosed:
@@ -622,7 +665,7 @@ class ExerciseSocketServer:
 
                         if self.output_mode == "VISUAL" and frame_counter % 2 == 0:
                             def encode_frame(img):
-                                small = cv2.resize(img, (400, 300))
+                                small = resize_within(img, 400, 300)
                                 _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 30])
                                 return base64.b64encode(buf).decode("utf-8")
                             self.last_frame_b64 = await asyncio.to_thread(encode_frame, frame)
@@ -642,7 +685,7 @@ class ExerciseSocketServer:
 
                         # --- CALIBRATION 진행 (양측 모두 3회) ---
                         if current_mode == "CALIBRATION":
-                            cal_res = self.controller.process_calibration_frame(filtered_kpts, is_occluded)
+                            cal_res = self.controller.process_calibration_frame(filtered_kpts, is_occluded, now=sample_time)
                             calib_rep_count = cal_res["calib_rep_count"]
                             calib_reps_left = cal_res["calib_reps_left"]
                             calib_reps_right = cal_res["calib_reps_right"]

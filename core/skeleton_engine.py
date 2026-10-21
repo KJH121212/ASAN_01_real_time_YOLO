@@ -95,7 +95,8 @@ class SkeletonEngine:  # 실시간 관절 포인트 추출을 전담하는 메�
             return None
         kpts, scores = predicted.keypoints[0], predicted.keypoint_scores[0]
         return [{"id": i, "x": round(float(kpts[i][0] / w), 4),
-                 "y": round(float(kpts[i][1] / h), 4), "score": round(float(scores[i]), 3)}
+                 "y": round(float(kpts[i][1] / h), 4), "score": round(float(scores[i]), 3),
+                 "image_aspect_ratio": w / h}
                 for i in range(17)]
 
     @torch.no_grad()
@@ -196,7 +197,8 @@ class SkeletonEngine:  # 실시간 관절 포인트 추출을 전담하는 메�
                 "id": coco_id,  # 관절 식별 번호 할당
                 "x": round(float(px / w), 4),  # 해상도로 나누어 정규 비율 좌표로 변환
                 "y": round(float(py / h), 4),  # 해상도로 나누어 정규 비율 좌표로 변환
-                "score": round(float(score), 3)  # 신뢰도 점수를 반올림하여 저장
+                "score": round(float(score), 3),  # 신뢰도 점수를 반올림하여 저장
+                "image_aspect_ratio": w / h,
             })  # 단일 관절 데이터 등록 완료
 
         return keypoints  # 원본 비율 좌표가 담긴 리스트 반환

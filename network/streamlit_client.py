@@ -7,6 +7,7 @@ change ROM through the original connection without restarting measurement.
 import asyncio
 import copy
 import json
+import math
 import queue
 import threading
 import time
@@ -21,10 +22,14 @@ FINISH_PACKETS = {"SESSION_FINISHED", "CALIBRATION_FINISHED", "VIDEO_ANALYSIS_CO
 
 
 class StreamlitSessionClient:
-    def __init__(self, uri, config, recorder=None):
+    def __init__(self, uri, config, recorder=None, ui_heartbeat_timeout=None):
         self.uri = uri
         self.config = copy.deepcopy(config)
         self.recorder = recorder
+        if ui_heartbeat_timeout is not None and (not math.isfinite(ui_heartbeat_timeout) or ui_heartbeat_timeout <= 0):
+            raise ValueError('ui_heartbeat_timeout must be finite and positive')
+        self._ui_heartbeat_timeout = ui_heartbeat_timeout
+        self._last_ui_heartbeat = time.monotonic()
         self.session_id = uuid.uuid4().hex
         self._commands = queue.Queue()
         self._events = queue.Queue()
@@ -58,9 +63,15 @@ class StreamlitSessionClient:
         if self._thread is not None:
             raise RuntimeError("Create a new client for each session")
         self._running.set()
+        self.touch_ui()
         self._status = "CONNECTING"
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
+
+    def touch_ui(self):
+        """Called by the Streamlit fragment, never by the networking worker."""
+        with self._lock:
+            self._last_ui_heartbeat = time.monotonic()
 
     def stop(self, timeout=6.0):
         if self.running and not self._stop.is_set():
@@ -175,6 +186,11 @@ class StreamlitSessionClient:
                 self._status = "RUNNING"
 
             while not self._stop.is_set():
+                with self._lock:
+                    ui_expired = (self._ui_heartbeat_timeout is not None and
+                                  time.monotonic() - self._last_ui_heartbeat >= self._ui_heartbeat_timeout)
+                if ui_expired and self._finish_request is None:
+                    self.request_finish('UI_DISCONNECTED')
                 if self._progress.finish_due(time.monotonic()) and self._finish_request is None:
                     self.request_finish("TARGET_REACHED")
                 if self._finish_deadline is not None and time.monotonic() >= self._finish_deadline:

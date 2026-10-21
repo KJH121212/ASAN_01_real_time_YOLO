@@ -105,7 +105,8 @@ class SkeletonBatchTests(unittest.TestCase):
         samples = self.engine.pose_model.test_step.call_args.args[0]
         self.assertEqual(len(samples), 3)
         self.assertEqual(samples[0]['bbox'].shape, (1, 4))
-        self.assertEqual(result[0][0], {'id': 0, 'x': 0.25, 'y': 0.25, 'score': 0.9})
+        self.assertEqual(result[0][0], {'id': 0, 'x': 0.25, 'y': 0.25, 'score': 0.9,
+                                      'image_aspect_ratio': 2.0})
         self.assertEqual(len(result[0]), 17)
 
     def test_missing_frames_and_people_keep_original_indices(self):

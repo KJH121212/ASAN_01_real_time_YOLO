@@ -51,6 +51,13 @@ class PoseNormalizer:
         )
         coords = kpt_matrix[:, :2]
         scores = kpt_matrix[:, 2]
+        # x/w and y/h have different units on nonsquare images. Convert both
+        # axes to image-height units BEFORE computing distances or joint angles.
+        # Legacy callers without image metadata retain their existing coordinates.
+        aspect_ratio = float(keypoints[0].get('image_aspect_ratio', 1.0))
+        if not np.isfinite(aspect_ratio) or aspect_ratio <= 0:
+            raise ValueError('image_aspect_ratio must be finite and positive')
+        coords[:, 0] *= aspect_ratio
 
         # 필수 기준 관절 유효 감지 여부 검증
         has_hips = (scores[self.LEFT_HIP] >= self.conf_threshold and scores[self.RIGHT_HIP] >= self.conf_threshold)

@@ -18,6 +18,9 @@ FRAME_FIELDS = [
     'left_value', 'right_value', 'left_rep_count', 'right_rep_count',
     'left_total_score', 'right_total_score', 'left_score_delta', 'right_score_delta',
     'left_state', 'right_state', 'left_quality', 'right_quality',
+    'left_calibration_status', 'right_calibration_status',
+    'left_calibration_baseline', 'right_calibration_baseline',
+    'left_calibration_return_tolerance', 'right_calibration_return_tolerance',
     'left_count_updated', 'right_count_updated', 'is_occluded', 'calib_step',
     'threshold_version', 'left_start_val', 'left_target_val', 'right_start_val', 'right_target_val',
 ]
@@ -104,6 +107,7 @@ class SessionLog:
         self._csv.flush()
         self.timestamps, self.values, self.keypoints = [], [], []
         self.frame_indices, self.video_indices = [], []
+        self.image_aspect_ratios = []
         self.total_scores, self.score_deltas = [], []
         self.record_video = record_video
         self.video_fps = float(video_fps)
@@ -189,7 +193,11 @@ class SessionLog:
                'metric_type': metric_type, 'is_occluded': is_occluded, 'calib_step': calib_step,
                'threshold_version': threshold_version}
         for side, data, value in zip(('left', 'right'), (left, right), values):
+            calibration = data.get('calibration', {})
             row.update({f'{side}_value': '' if np.isnan(value) else value,
+                        f'{side}_calibration_status': calibration.get('state', ''),
+                        f'{side}_calibration_baseline': calibration.get('baseline', ''),
+                        f'{side}_calibration_return_tolerance': calibration.get('return_tolerance', ''),
                         f'{side}_rep_count': data.get('rep_count', 0), f'{side}_state': data.get('state', ''),
                         f'{side}_total_score': data.get('total_score', 0.0),
                         f'{side}_score_delta': 0.0 if is_occluded else data.get('score_delta', 0.0),
@@ -202,6 +210,8 @@ class SessionLog:
         self.timestamps.append(float(elapsed_sec))
         self.values.append(values)
         self.keypoints.append(matrix)
+        self.image_aspect_ratios.append(
+            float(raw_keypoints[0].get('image_aspect_ratio', 1.0)) if raw_keypoints else np.nan)
         self.frame_indices.append(frame_idx)
         self.video_indices.append(video_frame_idx)
         self.total_scores.append([data.get('total_score', 0.0) for data in (left, right)])
@@ -240,6 +250,7 @@ class SessionLog:
                     total_scores=np.asarray(self.total_scores, dtype=np.float32).reshape(-1, 2),
                     score_deltas=np.asarray(self.score_deltas, dtype=np.float32).reshape(-1, 2),
                     keypoints=np.asarray(self.keypoints, dtype=np.float32).reshape(-1, 17, 3),
+                    image_aspect_ratio=np.asarray(self.image_aspect_ratios, dtype=np.float32),
                     player_id=self.patient_dir.name, exercise_name=self.exercise_name,
                     session_id=self.session_id, session_type=self.mode)
             temporary.replace(npz_path)

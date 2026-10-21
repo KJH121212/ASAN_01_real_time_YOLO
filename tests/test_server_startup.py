@@ -78,6 +78,33 @@ class ServerStartupTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status['model_state'], 'LOADING')
             self.server.init_live_session.assert_not_called()
 
+    async def test_slow_phone_camera_open_does_not_block_status_connections(self):
+        self.gate.set()
+        await self.server.model_loader.task
+        opening, finish_open = threading.Event(), threading.Event()
+
+        def slow_open(packet):
+            opening.set()
+            if not finish_open.wait(3):
+                raise RuntimeError('Camera test gate timeout')
+            self.init_fake_session(packet)
+
+        self.server.init_live_session = Mock(side_effect=slow_open)
+        async with websockets.connect(self.uri) as ws:
+            await self.send_start(ws)
+            try:
+                for _ in range(100):
+                    if opening.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(opening.is_set())
+                async with websockets.connect(self.uri) as monitor:
+                    status = await self.until(monitor, lambda packet: packet['type'] == 'SERVER_STATUS')
+                    self.assertTrue(status['ready'])
+            finally:
+                finish_open.set()
+            await self.until(ws, lambda packet: packet['type'] == 'SESSION_LOG_STARTED')
+
     async def test_session_and_initial_rom_query_wait_then_start_once(self):
         async with websockets.connect(self.uri) as ws:
             await self.send_start(ws)

@@ -81,12 +81,12 @@
       },
       "default_thresholds": {
         "left": {
-          "start_val": 90.0,
-          "target_val": 160.0
+          "start_val": 0.0,
+          "target_val": 90.0
         },
         "right": {
-          "start_val": 90.0,
-          "target_val": 160.0
+          "start_val": 0.0,
+          "target_val": 90.0
         }
       },
       "calibration_config": {
@@ -189,13 +189,13 @@
       },
       "default_thresholds": {
         "left": {
-          "start_val": 1.0,
-          "target_val": 0.7,
+          "start_val": 2.0,
+          "target_val": 1.0,
           "motion_direction": "DECREASING"
         },
         "right": {
-          "start_val": 1.0,
-          "target_val": 0.7,
+          "start_val": 2.0,
+          "target_val": 1.0,
           "motion_direction": "DECREASING"
         }
       }

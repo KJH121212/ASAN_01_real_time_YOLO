@@ -5,6 +5,25 @@ from tests.support import MockSessionServer, wait_for
 
 
 class StreamlitClientTests(unittest.TestCase):
+    def test_disappeared_ui_requests_stop_and_closes_socket(self):
+        self.client = StreamlitSessionClient(self.server.uri, self.config, ui_heartbeat_timeout=0.3)
+        self.start_client()
+        wait_for(lambda: not self.client.running)
+        commands = [packet for packet in self.server.packets if packet['type'] == 'CMD_STOP_SESSION']
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]['reason'], 'UI_DISCONNECTED')
+        self.assertTrue(self.server.disconnected.wait(2))
+
+    def test_active_ui_heartbeat_keeps_socket_alive(self):
+        import time
+        self.client = StreamlitSessionClient(self.server.uri, self.config, ui_heartbeat_timeout=0.3)
+        self.start_client()
+        for _ in range(8):
+            self.client.touch_ui()
+            time.sleep(0.075)
+        self.assertTrue(self.client.running)
+        self.assertFalse(any(packet['type'] == 'CMD_STOP_SESSION' for packet in self.server.packets))
+
     def setUp(self):
         self.server = MockSessionServer().start()
         self.config = dict(player_id='ui_test', patient_name='Test', exercise_name='biceps_curl',
