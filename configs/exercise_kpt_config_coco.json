@@ -164,9 +164,9 @@
       },
       "display_name_kr": "슬관절 신전 (Knee Extension)",
       "eval_config": {
-        "metric_type": "RATIO",
+        "metric_type": "LENGTH",
         "motion_direction": "AUTO",
-        "numerator_kpts": {
+        "primary_kpts": {
           "left": [
             13,
             15
@@ -174,16 +174,6 @@
           "right": [
             14,
             16
-          ]
-        },
-        "denominator_kpts": {
-          "left": [
-            11,
-            13
-          ],
-          "right": [
-            12,
-            14
           ]
         }
       },

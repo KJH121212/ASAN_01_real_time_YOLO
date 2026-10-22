@@ -21,7 +21,7 @@ data/
       └─ biceps_curl/
          ├─ session1_cali.csv
          ├─ session1_cali.npz
-         ├─ session1_cali.mp4           # 녹화 선택 시
+         ├─ session1_cali.mp4           # 영상은 항상 저장
          ├─ session1_round1_set1.csv
          ├─ session1_round1_set1.npz
          ├─ session1_round1_set1.mp4
@@ -57,7 +57,8 @@ Session/Round/Set은 0 이상의 정수이며, 생략한 Session은 해당 날�
 
 기존 `player_id`도 지원합니다. `patient_id`는 `"0001"`처럼 문자열로 보내야 앞자리 0이 유지됩니다.
 `mode: CALIBRATION`이면 `cal: true`로 보내거나 `cal`을 생략합니다.
-`record_video` 기본값은 false이며, true이면 이미지 전송 여부와 관계없이 서버에서 녹화합니다.
+서버는 영상을 항상 저장합니다. `record_video`를 생략하거나 false로 보내도 true로 처리합니다.
+실시간 소켓은 LIGHTWEIGHT 수치 전송만 제공하며 영상은 저장 후 [일괄 오버레이](video_overlay.md)로 확인합니다.
 Streamlit은 더 이상 자체 `recordings` 폴더에 영상을 저장하지 않습니다.
 
 실시간 웹캠 세션은 카메라 준비 후 기본 5초 동안 시작 자세를 잡을 시간을 제공합니다.

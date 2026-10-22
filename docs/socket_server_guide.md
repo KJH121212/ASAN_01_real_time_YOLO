@@ -1,6 +1,12 @@
 # 소켓 서버 사용 및 JSON 입출력 명세
 
+exe 빌드와 화면 재시작 뒤 `SERVER_BUSY`가 남을 때의 `CMD_RESET_SESSION` 사용법은 [exe 실행·연결 복구 안내](exe_and_recovery.md)를 참고하세요.
+
+기본 연동은 [소켓 서버 간단 사용법](socket_server_quickstart.md)부터 보세요. 아래는 선택 필드와 진단 이벤트까지 포함한 상세 명세입니다.
+
 이 문서는 현재 `network/socket_server.py`, `network/session_commands.py`, `core/session_controller.py` 구현을 기준으로 작성했습니다.
+현재는 모드 2(LIGHTWEIGHT)와 모드 3(영상 파일 분석)만 지원하고, 영상은 항상 저장합니다.
+저장 영상의 바·스켈레톤·카운트 표시는 [일괄 오버레이 안내](video_overlay.md)를 참고하세요.
 Unity나 별도 Python 클라이언트에서 서버를 연결할 때 사용하는 안내서입니다.
 예제의 환자 번호·경로·측정값·식별자는 설명용입니다. 응답 예제에서 생략한 필드는 실제 응답에 추가될 수 있습니다.
 
@@ -142,7 +148,7 @@ WebSocket 연결
   "round": 0,
   "set": 0,
   "camera_index": 0,
-  "output_mode": "VISUAL",
+  "output_mode": "LIGHTWEIGHT",
   "preparation_seconds": 5,
   "record_video": true,
   "patient_metadata": {"height_cm": 170, "weight_kg": 65}
@@ -163,7 +169,7 @@ WebSocket 연결
   "camera_index": 0,
   "output_mode": "LIGHTWEIGHT",
   "preparation_seconds": 5,
-  "record_video": false
+  "record_video": true
 }
 ```
 
@@ -184,12 +190,12 @@ WebSocket 연결
 | round | integer | 1 | 0 이상 |
 | set | integer | 1 | 0 이상 |
 | camera_index | integer | 0 | **서버 PC**에 등록된 카메라 장치 번호 |
-| output_mode | string | `VISUAL` | `VISUAL` 또는 `LIGHTWEIGHT` 권장 |
+| output_mode | string | `LIGHTWEIGHT` | LIGHTWEIGHT만 지원. VISUAL은 UNSUPPORTED_OUTPUT_MODE 오류 |
 | preparation_seconds | number | 5.0 | 실시간 측정 전 준비 시간. 0으로 비활성화. 유한한 0 이상 값 |
 | video_path | string | 없음 | 있으면 카메라 대신 오프라인 영상 분석 |
 | input_source | string | 호환 별칭 | `video_path`가 비어 있으면 사용. 현재는 영상 파일 경로로 해석 |
 | batch_size | integer | 16 | 오프라인 추론 배치 크기. 양수 |
-| record_video | boolean | false | 세션 MP4 저장 여부. VISUAL 전송과 독립적 |
+| record_video | boolean | 항상 true | 호환 필드. false를 보내도 서버가 true로 처리하여 MP4 저장 |
 | log_root | string | 환경 변수 또는 프로젝트 `data` | 서버 PC 기준 로그 폴더 |
 | patient_metadata | object | 없음 | `height_cm`, `weight_kg`. 제공 시 유한한 양수 |
 | target_score | number | 엔진 기본 참조값 10 | 선택적 호환·메타데이터 필드. **서버 자동 종료 조건이 아님** |
@@ -210,7 +216,7 @@ Streamlit은 목표 점수와 배점을 클라이언트 안에서 관리하며 �
 | clamshell | 클램쉘 | ANGLE: 반대쪽 골반–측정 쪽 골반–무릎 각도 |
 | slr | 하지 직거상 | COORDINATE: 발목의 신체 기준 y좌표 |
 | hip_knee_flexion | 고관절·슬관절 굴곡 | ANGLE: 어깨–골반–무릎의 고관절 각도 |
-| knee_extension | 슬관절 신전 | RATIO: 무릎–발목 길이 / 골반–무릎 길이 |
+| knee_extension | 슬관절 신전 | LENGTH: 정규화된 무릎–발목의 2D 거리 |
 
 `test_video`의 `leg_raise`, `leg_extension` 폴더명은 서버 운동 이름이 아닙니다.
 영상 테스트 클라이언트에서 각각 `hip_knee_flexion`, `knee_extension`으로 매핑합니다.
@@ -384,8 +390,8 @@ FAILED이면 `model_error`와 서버 터미널의 traceback을 확인하세요.
   "directory": "C:\\project\\data\\0001\\261020\\shoulder_press",
   "frame_csv": "C:\\project\\data\\0001\\261020\\shoulder_press\\session1_round1_set1.csv",
   "skeleton_npz": "C:\\project\\data\\0001\\261020\\shoulder_press\\session1_round1_set1.npz",
-  "video_mp4": null,
-  "record_video": false,
+  "video_mp4": "C:\\project\\data\\0001\\261020\\shoulder_press\\session1_round1_set1.mp4",
+  "record_video": true,
   "video_fps": 30.0,
   "target_score": null,
   "scoring_mode": "POINTS"
@@ -470,27 +476,10 @@ MAIN/TEST의 상태는 보통 READY → PUSHING → RETURNING → READY입니다
 | total_score | 서버 기본 배점 누적 참고값. 클라이언트 게임 규칙이 다르면 결과도 다를 수 있음 |
 | target_score | 엔진 참조값. 현재 서버의 자동 종료 조건이 아님 |
 
-#### VISUAL 전용 추가 필드
+#### 제거된 실시간 이미지 필드
 
-```json
-{
-  "keypoints": [{"id": 9, "x": 0.42, "y": 0.31, "score": 0.96, "image_aspect_ratio": 0.5625}],
-  "frame_b64": "JPEG 바이트의 Base64 문자열",
-  "yolo_detected": true
-}
-```
-
-실제 `keypoints`는 유효한 사람이 있을 때 COCO 17개 관절입니다. 위 배열은 축약 예제입니다.
-
-- `frame_b64`: JPEG 이미지. 처음에는 null일 수 있고 현재는 처리 프레임 2개마다 갱신합니다.
-- 이미지는 원본 비율을 유지하면서 최대 400×300 안으로 축소합니다. 9:16 입력이면 대략 169×300입니다.
-- `keypoints`: One Euro Filter 이후의 **이미지 비율 좌표**입니다. 신체 기준 좌표로 변환하기 전입니다.
-- x는 원본 너비, y는 원본 높이로 나눈 좌표입니다. 보통 0~1이지만 영상 밖 추정점은 범위를 벗어날 수 있습니다.
-- 관절 `score`는 신뢰도입니다. 좌우 결과의 품질 코드 `score`와 다른 필드입니다.
-- `image_aspect_ratio`는 원본 너비/높이입니다. 측정 재현 시 두 축의 단위를 맞추는 데 필요합니다.
-- 클라이언트가 영상을 여백과 함께 표시하면 관절 좌표에도 동일한 배율·오프셋을 적용해야 합니다.
-- JPEG와 관절은 매 프레임 완전히 동기화된 이미지 쌍을 보장하지 않습니다.
-- LIGHTWEIGHT에서는 위 세 필드가 전송되지 않습니다.
+VISUAL은 더 이상 지원하지 않습니다. POSE_UPDATE에 keypoints, frame_b64, yolo_detected를 넣지 않습니다.
+스켈레톤과 영상 확인은 저장된 NPZ와 일괄 오버레이 기능을 사용하세요. 아래 COCO 번호는 NPZ 관절 배열 해석에 사용합니다.
 
 COCO 관절 번호:
 
@@ -701,6 +690,7 @@ CALIBRATION이면 `calibration_completed == true`를 확인하세요. 미완료�
 | VIDEO_ANALYSIS_FAILED | 오프라인 시작 또는 분석 중 오류 |
 | SESSION_PROCESSING_FAILED | 메인 처리 루프 오류 |
 | INVALID_BATCH_SIZE | 오프라인 batch_size가 0 이하 |
+| UNSUPPORTED_OUTPUT_MODE | 제거된 VISUAL 등 LIGHTWEIGHT 이외의 출력 요청 |
 | NO_ACTIVE_SESSION | 활성 세션이 없거나 해당 연결이 소유하지 않음 |
 | SESSION_MISMATCH | 종료 명령의 session_id 불일치 |
 | EXERCISE_MISMATCH | 가동 범위 명령의 운동 이름 불일치 |
@@ -774,7 +764,7 @@ Unity에서 `>=`, 양측 달성, 다른 배점 등을 원하면 클라이언트 
   "mode": "CALIBRATION",
   "video_path": "C:\\videos\\shoulder_press.mp4",
   "batch_size": 8,
-  "record_video": false,
+  "record_video": true,
   "log_root": "C:\\project\\data\\video_tests"
 }
 ```
@@ -822,7 +812,7 @@ data/
 ```
 
 같은 이름이 있으면 `_take2`, `_take3`를 붙입니다. 기존 세트를 다시 기록했다는 뜻이며 세트 번호 증가가 아닙니다.
-`record_video=false`이면 MP4 경로는 null입니다.
+서버는 유효한 입력 프레임을 항상 MP4로 저장합니다. 준비 중 중지해 프레임이 없으면 실제 영상 파일은 생성되지 않을 수 있습니다.
 CSV는 프레임마다 기록하고, NPZ·반복 로그·요약은 종료 시 확정합니다.
 
 ### 공통 summary 필드
@@ -896,7 +886,7 @@ async def main():
                         "type": "CMD_SET_SESSION", "patient_id": "0001",
                         "exercise_name": "shoulder_press", "mode": "MAIN",
                         "camera_index": 0, "output_mode": "LIGHTWEIGHT",
-                        "preparation_seconds": 5, "record_video": False,
+                        "preparation_seconds": 5, "record_video": True,
                     }))
                     started = True
             elif kind == "SESSION_LOG_STARTED":
@@ -950,7 +940,7 @@ camera_index는 Windows에 등록된 서버 PC의 장치 번호입니다.
 - 알 수 없는 일반 명령에 대해 항상 오류 응답을 보내지는 않습니다. 이 문서의 명령만 사용하세요.
 - 모든 요청에 request_id가 반영되는 것은 아닙니다. 가동 범위 조회/수정과 종료 명령을 중심으로 지원합니다.
 - POSE_UPDATE 자체에는 session_id가 없습니다. SESSION_LOG_STARTED로 활성 세션을 보관하고 REP_COMPLETED의 session_id를 검증하세요.
-- 시작 요청의 임의 출력 모드를 엄격하게 검증하지 않는 경로가 있으므로 VISUAL/LIGHTWEIGHT만 사용하세요.
+- 시작 요청은 LIGHTWEIGHT만 지원하며, VISUAL 등 다른 값은 UNSUPPORTED_OUTPUT_MODE 오류를 반환합니다.
 - 실시간 세션 시작을 같은 연결에서 다시 요청하면 이전 세션을 STOPPED로 저장하고 새 세션을 시작합니다.
 - 모델 준비 중 시작 요청을 여러 번 보내면 대기 요청이 최신 값으로 바뀔 수 있습니다.
 - 오프라인 분석 중 새 세션 시작이나 ROM 수정은 허용하지 않습니다. 먼저 결과나 종료 응답을 기다리세요.

@@ -42,7 +42,7 @@ python tests/evaluate_calibration_videos.py --exercise shoulder_press --limit-pe
 - One Euro Filter, 정규화, 기본 ROM, 양측 각각 3회, 1초 마무리 조건을 그대로 사용합니다.
 - 실시간 전용 5초 준비 시간은 적용하지 않습니다.
 - 실험용 환자 ID와 프로필은 출력 폴더의 `sessions` 안에 격리합니다.
-- 원본 영상은 수정하지 않고 MP4를 다시 저장하지 않습니다.
+- 원본 영상은 수정하지 않습니다. 소켓 서버의 영상 상시 저장 정책에 따라 실험 세션에도 MP4를 저장합니다.
 
 ## 결과 파일
 
