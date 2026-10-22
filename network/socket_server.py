@@ -383,11 +383,13 @@ class ExerciseSocketServer:
         # `manager` 값에 `DataManager(player_id=data.get('patient_id', data.get('player_id', 'patient_1')), patient_name=data.get('patient_name', 'Unknown'), log_root=data.get('log_root'), patien…` 호출 결과를 저장합니다. 대상: `manager`.
         manager = DataManager(
             # 구성 항목: 환자 식별 번호의 기존 필드명(`player_id`)에 `data.get('patient_id', data.get('player_id', 'patient_1'))` 호출 결과를 지정합니다.
-            player_id=data.get("patient_id", data.get("player_id", "patient_1")),
+            player_id=data.get("patient_id", data.get("player_id", "0001")),
             # 구성 항목: `patient_name` 값(`patient_name`)에 `data.get('patient_name', 'Unknown')` 호출 결과; 세션 로그를 저장하는 최상위 폴더(`log_root`)에 `data.get('log_root')` 호출 결과를 지정합니다.
             patient_name=data.get("patient_name", "Unknown"), log_root=data.get("log_root"),
             # 구성 항목: 환자의 키·몸무게 등 부가 정보(`patient_metadata`)에 `data.get('patient_metadata')` 호출 결과를 지정합니다.
-            patient_metadata=data.get("patient_metadata"))
+            patient_metadata=data.get("patient_metadata"),
+            # 버전·등록 차수는 Unity가 사용하는 값을 그대로 전달합니다.
+            data_version=data.get("data_version", "v1.0.0(0)"), registration=data.get("registration", 1))
         # `manager.begin_session(exercise_name=data.get('exercise_name', 'biceps_curl'), mode=mode, session=data.get('session'), round_number=data.get('round', 1), set_number=data.…`을 호출하여 해당 단계의 작업을 수행합니다.
         manager.begin_session(
             # 구성 항목: 운동 설정의 식별 이름(`exercise_name`)에 `data.get('exercise_name', 'biceps_curl')` 호출 결과; 실행 모드(`mode`)에 실행 모드(`mode`)을 지정합니다.
@@ -397,7 +399,10 @@ class ExerciseSocketServer:
             # 구성 항목: 영상 녹화 여부(`record_video`)에 True; 저장 영상의 초당 프레임 수(`video_fps`)에 저장 영상의 초당 프레임 수(`video_fps`)을 지정합니다.
             record_video=True, video_fps=video_fps,
             # 구성 항목: 게임 목표 점수(`target_score`)에 `data.get('target_score')` 호출 결과를 지정합니다.
-            target_score=data.get("target_score"))
+            target_score=data.get("target_score"),
+            # 플레이 전체 ID와 운동별 기록 ID를 카메라 파일의 메타데이터에 연결합니다.
+            play_session_id=data.get("play_session_id"), exercise_record_id=data.get("exercise_record_id"),
+            slot=data.get("slot", 1))
         # 현재 기록 중인 세션 로그에 현재 세션의 CSV·NPZ·MP4 기록 객체(`manager.session_log`)을 저장합니다. 대상: `self._active_log`.
         self._active_log = manager.session_log
         # 측정 세션 started에 고해상도 단조 시각(초)(`time.perf_counter()`)을 저장합니다. 대상: `self._session_started`.
@@ -611,6 +616,9 @@ class ExerciseSocketServer:
             await websocket.send(json.dumps({
                 # 구성 항목: `type` 값(`'type'`)에 'REP_COMPLETED'; 현재 측정 세션 식별자(`'session_id'`)에 현재 측정 세션 식별자(`log.session_id`)을 지정합니다.
                 "type": "REP_COMPLETED", "session_id": log.session_id,
+                # Unity의 운동 상세·게임 이벤트와 직접 연결할 수 있는 공통 ID입니다.
+                "play_session_id": log.play_session_id, "exercise_record_id": log.exercise_record_id,
+                "sensor_file_id": log.sensor_file_id,
                 # 구성 항목: 운동 설정의 식별 이름(`'exercise_name'`)에 운동 설정의 식별 이름(`engine.exercise_name`); 실행 모드(`'mode'`)에 실행 모드(`engine.mode`)을 지정합니다.
                 "exercise_name": engine.exercise_name, "mode": engine.mode,
                 # 구성 항목: 좌우 구분(`'side'`)에 좌우 구분(`side`); 반복 id(`'rep_id'`)에 계산식 `data['rep_count']`의 결과; 동작 품질 등급(`'quality'`)에 계산식 `data['quality']`의 결과를 지정합니다.

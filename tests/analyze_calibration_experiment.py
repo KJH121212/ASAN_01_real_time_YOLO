@@ -52,7 +52,10 @@ def examine(row):
         # 현재 함수 처리를 끝내고 순서·구성을 지정한 `(row, [])`을 호출한 쪽으로 반환합니다.
         return row, []
     # `paths` 값에 `list(Path(row['session_directory']).glob('session1_cali.csv'))` 호출 결과를 저장합니다. 대상: `paths`.
-    paths = list(Path(row['session_directory']).glob('session1_cali.csv'))
+    # 새 카메라 파일명과 기존 실험 결과 모두 읽되 반복별 요약 CSV는 제외합니다.
+    directory = Path(row['session_directory'])
+    paths = list(directory.glob('*_Calibration_Camera_*.csv')) or list(directory.glob('session1_cali.csv'))
+    paths = [path for path in paths if not path.stem.endswith('_reps')]
     # 영상 프레임 묶음에 `paths`이면 `read_csv(paths[0])`, 아니면 `[]`을 저장합니다. 대상: `frames`.
     frames = read_csv(paths[0]) if paths else []
     # `collecting` 값에 반복·조건식 `[frame for frame in frames if frame['calib_step'] == 'COLLECTING']`으로 구성한 값을 저장합니다. 대상: `collecting`.

@@ -1,5 +1,7 @@
 # 소켓 서버 사용 및 JSON 입출력 명세
 
+로그는 PatientData 공통 버전·환자·등록 차수·플레이 ID 구조를 사용합니다. 카메라 전용 확장과 Unity 연동 예시는 [PatientData 카메라 로그](patient_data_camera.md)를 참고하세요.
+
 exe 빌드와 화면 재시작 뒤 `SERVER_BUSY`가 남을 때의 `CMD_RESET_SESSION` 사용법은 [exe 실행·연결 복구 안내](exe_and_recovery.md)를 참고하세요.
 
 기본 연동은 [소켓 서버 간단 사용법](socket_server_quickstart.md)부터 보세요. 아래는 선택 필드와 진단 이벤트까지 포함한 상세 명세입니다.
@@ -180,13 +182,18 @@ WebSocket 연결
 | 필드 | 형식 | 기본값 / 처리 | 설명 |
 |---|---|---|---|
 | type | string | 필수 | `CMD_SET_SESSION` |
-| patient_id | string | `player_id`, 없으면 `patient_1` | 환자 번호. 앞자리 0을 보존하려면 문자열 사용 |
+| patient_id | string | `player_id`, 없으면 `0001` | 환자 번호. 숫자 문자열은 네 자리로 보정 |
 | player_id | string | 호환 별칭 | `patient_id`가 있으면 그 값이 우선 |
 | patient_name | string | `Unknown` | 환자 이름 |
 | exercise_name | string | `biceps_curl` | 아래 운동 이름 사용 |
 | mode | string | `CALIBRATION` | `CALIBRATION`, `MAIN`, `TEST` |
 | cal | boolean | 생략 가능 | 있으면 `mode == CALIBRATION`과 반드시 일치 |
-| session | integer | 해당 날짜·운동의 다음 번호 | 0 이상 |
+| session | integer | 1 | 기존 숫자 Session 메타데이터. 공통 플레이 ID와 별개 |
+| data_version | string | `v1.0.0(0)` | Unity BuildInfo의 최종 버전 폴더명 |
+| registration | integer/string | 1 | Unity 등록 차수. 1 또는 `01`, 1~99 |
+| play_session_id | string | 단독 테스트용 고유 ID | Unity 전체 플레이 ID |
+| exercise_record_id | string | 단독 테스트용 고유 ID | 라운드·운동 슬롯의 기록 ID. 여러 세트에서 유지 |
+| slot | integer | 1 | 처방 목록의 운동 순서. 0 이상 |
 | round | integer | 1 | 0 이상 |
 | set | integer | 1 | 0 이상 |
 | camera_index | integer | 0 | **서버 PC**에 등록된 카메라 장치 번호 |
@@ -196,7 +203,7 @@ WebSocket 연결
 | input_source | string | 호환 별칭 | `video_path`가 비어 있으면 사용. 현재는 영상 파일 경로로 해석 |
 | batch_size | integer | 16 | 오프라인 추론 배치 크기. 양수 |
 | record_video | boolean | 항상 true | 호환 필드. false를 보내도 서버가 true로 처리하여 MP4 저장 |
-| log_root | string | 환경 변수 또는 프로젝트 `data` | 서버 PC 기준 로그 폴더 |
+| log_root | string | 환경 변수 또는 프로젝트 `PatientData` | 서버 PC 기준 PatientData 최상위 폴더 |
 | patient_metadata | object | 없음 | `height_cm`, `weight_kg`. 제공 시 유한한 양수 |
 | target_score | number | 엔진 기본 참조값 10 | 선택적 호환·메타데이터 필드. **서버 자동 종료 조건이 아님** |
 | target_reps | number | 호환 필드 | `target_score`가 없으면 엔진 생성 시 참조. MAIN/TEST 자동 종료 조건이 아님 |
@@ -387,14 +394,20 @@ FAILED이면 `model_error`와 서버 터미널의 traceback을 확인하세요.
   "session": 1,
   "round": 1,
   "set": 1,
-  "directory": "C:\\project\\data\\0001\\261020\\shoulder_press",
-  "frame_csv": "C:\\project\\data\\0001\\261020\\shoulder_press\\session1_round1_set1.csv",
-  "skeleton_npz": "C:\\project\\data\\0001\\261020\\shoulder_press\\session1_round1_set1.npz",
-  "video_mp4": "C:\\project\\data\\0001\\261020\\shoulder_press\\session1_round1_set1.mp4",
+  "directory": "C:\\project\\PatientData\\v1.0.0(0)\\0001\\01\\Sensors\\2026-10-20\\PLAY_ID\\Camera",
+  "frame_csv": "C:\\project\\PatientData\\v1.0.0(0)\\0001\\01\\Sensors\\2026-10-20\\PLAY_ID\\Camera\\R01_S01_Set01_Play_Camera_f9a764e76bc4451d82c22d9ad0f493f1.csv",
+  "skeleton_npz": "C:\\project\\PatientData\\v1.0.0(0)\\0001\\01\\Sensors\\2026-10-20\\PLAY_ID\\Camera\\R01_S01_Set01_Play_Camera_f9a764e76bc4451d82c22d9ad0f493f1.npz",
+  "video_mp4": "C:\\project\\PatientData\\v1.0.0(0)\\0001\\01\\Sensors\\2026-10-20\\PLAY_ID\\Camera\\R01_S01_Set01_Play_Camera_f9a764e76bc4451d82c22d9ad0f493f1.mp4",
   "record_video": true,
   "video_fps": 30.0,
   "target_score": null,
-  "scoring_mode": "POINTS"
+  "scoring_mode": "POINTS",
+  "data_version": "v1.0.0(0)",
+  "registration": "01",
+  "play_session_id": "PLAY_ID",
+  "exercise_record_id": "EXERCISE_ID",
+  "sensor_file_id": "f9a764e76bc4451d82c22d9ad0f493f1",
+  "slot": 1
 }
 ```
 
@@ -790,28 +803,25 @@ python tests/run_calibration_videos.py --exercise shoulder_press
 
 ## 8. 로그와 파일
 
-기본 위치는 프로젝트 루트의 `data`입니다.
-우선순위는 시작 JSON의 log_root → ASAN_LOG_ROOT 환경 변수 → 프로젝트 data 순서입니다.
+기본 위치는 프로젝트 루트의 `PatientData`이며 exe에서는 exe 옆 폴더입니다.
+우선순위는 시작 JSON의 log_root → ASAN_LOG_ROOT 환경 변수 → 기본 위치 순서입니다.
 
 ```text
-data/
-└─ 0001/
+PatientData/v1.0.0(0)/0001/01/
+├─ Sensors/2026-10-22/PLAY_ID/Camera/
+│  ├─ R01_S02_Set01_Play_Camera_FILE_ID.csv
+│  ├─ R01_S02_Set01_Play_Camera_FILE_ID.npz
+│  ├─ R01_S02_Set01_Play_Camera_FILE_ID.mp4
+│  ├─ R01_S02_Set01_Play_Camera_FILE_ID_reps.csv
+│  └─ R01_S02_Set01_Play_Camera_FILE_ID.json
+└─ Management/Camera/
+   ├─ profile.json
    ├─ patient_metadata.csv
-   ├─ 0001.json
-   └─ 261020/
-      ├─ gamedata.csv
-      └─ shoulder_press/
-         ├─ session1_cali.csv
-         ├─ session1_cali.npz
-         ├─ session1_cali.mp4
-         ├─ session1_cali_reps.csv
-         ├─ session1_cali.json
-         ├─ session1_round1_set1.csv
-         ├─ session1_round1_set1.npz
-         └─ ...
+   ├─ Records/FILE_ID.json
+   └─ Daily/2026-10-22.csv
 ```
 
-같은 이름이 있으면 `_take2`, `_take3`를 붙입니다. 기존 세트를 다시 기록했다는 뜻이며 세트 번호 증가가 아닙니다.
+각 구간의 고유 파일 ID로 반복 실행을 구분하며 기존 파일을 덮어쓰지 않습니다. Unity의 PlayData·Records·등록 예약·IMU 복구 파일은 변경하지 않습니다.
 서버는 유효한 입력 프레임을 항상 MP4로 저장합니다. 준비 중 중지해 프레임이 없으면 실제 영상 파일은 생성되지 않을 수 있습니다.
 CSV는 프레임마다 기록하고, NPZ·반복 로그·요약은 종료 시 확정합니다.
 

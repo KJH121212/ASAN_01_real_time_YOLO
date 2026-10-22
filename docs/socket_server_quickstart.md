@@ -5,7 +5,7 @@
 서버 실행: `python network/socket_server.py`  
 연결 주소: `ws://127.0.0.1:8080`
 
-같은 WebSocket 연결에서 시작 → 이벤트 수신 → 중지를 진행합니다. 모델은 서버에 유지되고, 측정을 시작할 때 카메라가 열립니다. 기본 준비 시간은 5초이며 CSV·NPZ·MP4는 기본적으로 프로젝트 `data`에 저장됩니다.
+같은 WebSocket 연결에서 시작 → 이벤트 수신 → 중지를 진행합니다. 모델은 서버에 유지되고, 측정을 시작할 때 카메라가 열립니다. 기본 준비 시간은 5초이며 CSV·NPZ·MP4는 기본적으로 프로젝트 `PatientData`에 저장됩니다. Unity와 공통 ID를 연결하는 입력은 [PatientData 카메라 로그 규격](patient_data_camera.md)을 참고하세요.
 
 ## 입력: 시작과 중지
 

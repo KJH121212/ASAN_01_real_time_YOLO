@@ -1,7 +1,7 @@
 # 한국어 코드 해설: 동일한 세션 이름으로 CSV·NPZ·MP4·요약 JSON을 저장하고 촬영 시간에 맞춰 녹화 프레임을 배치합니다.
 # 아래 설명은 실행식 앞에 붙인 주석입니다. 문자열·정규식·프로토콜 값과 계산 순서는 원본을 유지합니다.
 # 다음 문자열은 모듈·클래스·함수의 설명 또는 문자열 리터럴입니다. 문자열 내용은 주석 추가로 변경하지 않습니다.
-"""Patient/date/exercise logs, with a single basename for CSV/NPZ/MP4."""
+"""PatientData 공통 경로에서 카메라 CSV·NPZ·MP4와 독립적인 관리 기록을 저장합니다."""
 
 # 이 파일에서 사용할 `csv` 모듈을 불러옵니다.
 import csv
@@ -24,12 +24,16 @@ import uuid
 
 # 이 파일에서 사용할 `numpy`(`np`) 모듈을 불러옵니다.
 import numpy as np
+# 공유 플레이·운동 ID와 카메라 파일 ID를 구분합니다.
+from core.patient_data import DEFAULT_DATA_VERSION, shared_identifier
 
 
 # `KST` 값에 `timezone(timedelta(hours=9))` 호출 결과를 저장합니다. 대상: `KST`.
 KST = timezone(timedelta(hours=9))
 # 프레임 fields에 순서·구성을 지정한 `['timestamp_ms', 'frame_idx', 'video_frame_idx', 'motion_name', 'metric_type', 'left_value', 'right_value', 'left_rep_count', 'right_rep_count', 'left_total_score', 'rig…`을 저장합니다. 대상: `FRAME_FIELDS`.
 FRAME_FIELDS = [
+    # 같은 플레이의 IMU와 카메라 데이터를 연결하기 위한 식별 열입니다.
+    'time', 'play_session_id', 'exercise_record_id', 'sensor_file_id', 'source', 'collection_phase', 'metric_unit',
     # 앞줄에서 시작한 식·인수·자료 구조를 `'timestamp_ms', 'frame_idx', 'video_frame_idx', 'motion_name', 'metric_type',` 내용으로 이어서 구성합니다.
     'timestamp_ms', 'frame_idx', 'video_frame_idx', 'motion_name', 'metric_type',
     # 앞줄에서 시작한 식·인수·자료 구조를 `'left_value', 'right_value', 'left_rep_count', 'right_rep_count',` 내용으로 이어서 구성합니다.
@@ -52,10 +56,14 @@ FRAME_FIELDS = [
 ]
 # 반복 fields에 순서·구성을 지정한 `['session_id', 'side', 'rep_num', 'duration_sec', 'min_val', 'max_val', 'achieved_rom', 'quality', 'score_delta', 'total_score', 'start_val', 'target_val', 'threshold_ve…`을 저장합니다. 대상: `REP_FIELDS`.
 REP_FIELDS = ['session_id', 'side', 'rep_num', 'duration_sec', 'min_val', 'max_val',
+              'play_session_id', 'exercise_record_id', 'sensor_file_id',
               # 앞줄에서 시작한 식·인수·자료 구조를 `'achieved_rom', 'quality', 'score_delta', 'total_score', 'start_val', 'target_val', 'threshold_version']` 내용으로 이어서 구성합니다.
               'achieved_rom', 'quality', 'score_delta', 'total_score', 'start_val', 'target_val', 'threshold_version']
 # `GAME_FIELDS` 값에 순서·구성을 지정한 `['session_id', 'started_at', 'patient_id', 'motion_name', 'mode', 'session', 'round', 'set', 'status', 'saved_frames', 'left_reps', 'right_reps', 'left_total_score', 'ri…`을 저장합니다. 대상: `GAME_FIELDS`.
 GAME_FIELDS = ['session_id', 'started_at', 'patient_id', 'motion_name', 'mode', 'session', 'round', 'set',
+               'play_session_id', 'exercise_record_id', 'sensor_file_id', 'data_version', 'registration', 'slot',
+               'ended_at', 'collection_phase', 'source',
+               'frame_csv_relative', 'skeleton_npz_relative', 'video_mp4_relative',
                # 앞줄에서 시작한 식·인수·자료 구조를 `'status', 'saved_frames', 'left_reps', 'right_reps', 'left_total_score', 'right_total_score',` 내용으로 이어서 구성합니다.
                'status', 'saved_frames', 'left_reps', 'right_reps', 'left_total_score', 'right_total_score',
                # 앞줄에서 시작한 식·인수·자료 구조를 `'target_score', 'duration_sec',` 내용으로 이어서 구성합니다.
@@ -74,9 +82,9 @@ def default_log_root():
         return Path(configured).expanduser().resolve()
     # PyInstaller 실행 파일에서는 기본 data 경로를 exe가 있는 폴더 기준으로 고정합니다.
     if getattr(sys, "frozen", False):
-        return (Path(sys.executable).resolve().parent / 'data').resolve()
-    # 현재 함수 처리를 끝내고 `(Path(__file__).resolve().parent.parent / 'data').resolve()` 호출 결과를 호출한 쪽으로 반환합니다.
-    return (Path(__file__).resolve().parent.parent / 'data').resolve()
+        return (Path(sys.executable).resolve().parent / 'PatientData').resolve()
+    # Python 실행의 기본 로그 위치는 프로젝트의 PatientData입니다.
+    return (Path(__file__).resolve().parent.parent / 'PatientData').resolve()
 
 
 # 경로 component 처리 함수입니다. 입력을 아래 순서로 처리하고 반환문 또는 객체 상태로 결과를 전달합니다.
@@ -122,7 +130,9 @@ class SessionLog:
     # 생성자: 전달받은 설정을 보관하고 이 객체가 사용할 상태·누적값·자원을 초기화합니다.
     def __init__(self, patient_dir, exercise_name, mode, session=None, round_number=1,
                  # 이 줄의 입력 인수: `set_number` = 설정 number; `record_video` = 영상 녹화 여부; `video_fps` = 저장 영상의 초당 프레임 수; `started_at` = `started_at` 값; `target_score` = 게임 목표 점수. 기본값·형식은 아래 선언을 따릅니다.
-                 set_number=1, record_video=False, video_fps=30.0, started_at=None, target_score=None):
+                 set_number=1, record_video=False, video_fps=30.0, started_at=None, target_score=None,
+                 *, play_session_id=None, exercise_record_id=None, slot=1, patient_id=None,
+                 data_version=DEFAULT_DATA_VERSION, registration='01'):
         # 환자별 로그 폴더에 `Path(patient_dir)` 호출 결과를 저장합니다. 대상: `self.patient_dir`.
         self.patient_dir = Path(patient_dir)
         # 운동 설정의 식별 이름에 `path_component(exercise_name, 'exercise_name')` 호출 결과를 저장합니다. 대상: `self.exercise_name`.
@@ -153,28 +163,31 @@ class SessionLog:
         self.round = sequence_number(round_number, 'round')
         # 설정에 `sequence_number(set_number, 'set')` 호출 결과를 저장합니다. 대상: `self.set`.
         self.set = sequence_number(set_number, 'set')
-        # `self.date_dir` 값에 계산식 `self.patient_dir / self.started_at.strftime('%y%m%d')`의 결과를 저장합니다. 대상: `self.date_dir`.
-        self.date_dir = self.patient_dir / self.started_at.strftime('%y%m%d')
-        # 폴더에 계산식 `self.date_dir / self.exercise_name`의 결과를 저장합니다. 대상: `self.directory`.
-        self.directory = self.date_dir / self.exercise_name
+        # 서버의 세트 단위 측정 ID와 Unity 전체 플레이 ID는 서로 다른 식별자입니다.
+        self.play_session_id = shared_identifier(play_session_id, 'play_session_id')
+        # 여러 세트를 같은 운동 기록으로 연결하려면 Unity가 같은 운동 기록 ID를 전달합니다.
+        self.exercise_record_id = shared_identifier(exercise_record_id, 'exercise_record_id')
+        # 같은 구간의 CSV·NPZ·MP4를 하나의 파일 ID로 묶습니다.
+        self.sensor_file_id = uuid.uuid4().hex
+        self.slot = sequence_number(slot, 'slot')
+        self.collection_phase = 'Calibration' if mode == 'CALIBRATION' else 'Play'
+        self.patient_id = patient_id or self.patient_dir.name
+        # 센서 날짜는 수집 시작일(KST)이며 종료 시 자정이 지나도 원시 파일을 옮기지 않습니다.
+        self.date_dir = self.patient_dir / 'Sensors' / self.started_at.strftime('%Y-%m-%d')
+        # Unity 플레이 ID 아래 Camera 영역에서 IMU Left·Right 파일과 구분합니다.
+        self.directory = self.date_dir / self.play_session_id / 'Camera'
         # `self.directory.mkdir(parents=True, exist_ok=True)`을 호출하여 필요한 폴더를 생성합니다.
         self.directory.mkdir(parents=True, exist_ok=True)
         # 조건 `session is None`을 만족하는 경우에만 아래 분기를 실행합니다.
         if session is None:
-            # `numbers` 값에 반복·조건식 `[int(match.group(1)) for path in self.directory.glob('session*.csv') if (match := re.match('session(\\d+)_', path.name))]`으로 구성한 값을 저장합니다. 대상: `numbers`.
-            numbers = [int(match.group(1)) for path in self.directory.glob('session*.csv')
-                       # 앞줄에서 시작한 식·인수·자료 구조를 `if (match := re.match(r'session(\d+)_', path.name))]` 내용으로 이어서 구성합니다.
-                       if (match := re.match(r'session(\d+)_', path.name))]
-            # 측정 세션에 계산식 `max(numbers, default=0) + 1`의 결과를 저장합니다. 대상: `session`.
-            session = max(numbers, default=0) + 1
+            # 숫자 Session은 기존 클라이언트용 부가 정보입니다. 파일 구분은 고유 ID를 사용합니다.
+            session = 1
         # 측정 세션에 `sequence_number(session, 'session')` 호출 결과를 저장합니다. 대상: `self.session`.
         self.session = sequence_number(session, 'session')
-        # `stem` 값에 `mode == 'CALIBRATION'`이면 `f'session{session}_cali'`, 아니면 `f'session{session}_round{self.round}_set{self.set}'`을 저장합니다. 대상: `stem`.
-        stem = (f'session{session}_cali' if mode == 'CALIBRATION'
-                # 앞줄에서 시작한 식·인수·자료 구조를 `else f'session{session}_round{self.round}_set{self.set}')` 내용으로 이어서 구성합니다.
-                else f'session{session}_round{self.round}_set{self.set}')
         # `take` 값에 1을 저장합니다. 대상: `take`.
         take = 1
+        # 좌우 IMU 파일과 충돌하지 않도록 수집원을 Camera로 명시합니다.
+        stem = f'R{self.round:02d}_S{self.slot:02d}_Set{self.set:02d}_{self.collection_phase}_Camera_{self.sensor_file_id}'
         # 조건 `True`이 유지되는 동안 아래 처리를 반복합니다.
         while True:
             # `self.basename` 값에 `take == 1`이면 `stem`, 아니면 `f'{stem}_take{take}'`을 저장합니다. 대상: `self.basename`.
@@ -198,7 +211,7 @@ class SessionLog:
                 # `take` 값에 `1`을 더해 누적합니다. 대상: `take`.
                 take += 1
         # 현재 측정 세션 식별자에 `uuid.uuid4().hex` 값(`uuid.uuid4().hex`)을 저장합니다. 대상: `self.session_id`.
-        self.session_id = uuid.uuid4().hex
+        self.session_id = self.sensor_file_id
         # `self._writer` 값에 `csv.DictWriter(self._csv, fieldnames=FRAME_FIELDS)` 호출 결과를 저장합니다. 대상: `self._writer`.
         self._writer = csv.DictWriter(self._csv, fieldnames=FRAME_FIELDS)
         # `self._writer.writeheader()`을 호출하여 CSV의 열 이름 행을 기록합니다.
@@ -233,14 +246,20 @@ class SessionLog:
         self._summary = None
         # `self.info` 값에 키 'session_id', 'started_at', 'patient_id', 'motion_name', 'mode', 'session', 'round', 'set', 'log_root', 'dire…로 구성한 사전을 저장합니다. 대상: `self.info`.
         self.info = {
+            # Unity의 내부 JSON 스키마와 구분되는 카메라 전용 명세 버전입니다.
+            'storage_schema': 'PatientData.Camera/1',
             # 구성 항목: 현재 측정 세션 식별자(`'session_id'`)에 현재 측정 세션 식별자(`self.session_id`); `started_at` 값(`'started_at'`)에 `self.started_at.isoformat()` 호출 결과를 지정합니다.
             'session_id': self.session_id, 'started_at': self.started_at.isoformat(),
             # 구성 항목: 환자 식별 번호(`'patient_id'`)에 `self.patient_dir.name` 값(`self.patient_dir.name`); 운동 name(`'motion_name'`)에 운동 설정의 식별 이름(`self.exercise_name`); 실행 모드(`'mode'`)에 실행 모드(`mode`)을 지정합니다.
-            'patient_id': self.patient_dir.name, 'motion_name': self.exercise_name, 'mode': mode,
+            'patient_id': self.patient_id, 'motion_name': self.exercise_name, 'mode': mode,
+            # 기존 session_id는 클라이언트 이벤트 중복 방지용 측정 ID로 유지합니다.
+            'play_session_id': self.play_session_id, 'exercise_record_id': self.exercise_record_id,
+            'sensor_file_id': self.sensor_file_id, 'source': 'Camera', 'collection_phase': self.collection_phase,
+            'data_version': data_version, 'registration': registration, 'slot': self.slot,
             # 구성 항목: 측정 세션(`'session'`)에 측정 세션(`self.session`); `round` 값(`'round'`)에 `self.round` 값(`self.round`); 설정(`'set'`)에 설정(`self.set`)을 지정합니다.
             'session': self.session, 'round': self.round, 'set': self.set,
             # 구성 항목: 세션 로그를 저장하는 최상위 폴더(`'log_root'`)에 `str(self.patient_dir.parent)` 호출 결과; 폴더(`'directory'`)에 `str(self.directory)` 호출 결과를 지정합니다.
-            'log_root': str(self.patient_dir.parent), 'directory': str(self.directory),
+            'log_root': str(self.patient_dir.parents[2]), 'directory': str(self.directory),
             # 구성 항목: 프레임 csv(`'frame_csv'`)에 `str(self.base.with_suffix('.csv'))` 호출 결과를 지정합니다.
             'frame_csv': str(self.base.with_suffix('.csv')),
             # 구성 항목: `skeleton_npz` 값(`'skeleton_npz'`)에 `str(self.base.with_suffix('.npz'))` 호출 결과를 지정합니다.
@@ -252,7 +271,9 @@ class SessionLog:
             # 구성 항목: `manifest_json` 값(`'manifest_json'`)에 `str(self.base.with_suffix('.json'))` 호출 결과를 지정합니다.
             'manifest_json': str(self.base.with_suffix('.json')),
             # 구성 항목: `gamedata_csv` 값(`'gamedata_csv'`)에 `str(self.date_dir / 'gamedata.csv')` 호출 결과를 지정합니다.
-            'gamedata_csv': str(self.date_dir / 'gamedata.csv'),
+            # Unity의 일별 xlsx·Records JSON과 별개로 카메라 요약을 기록합니다.
+            'gamedata_csv': str(self.patient_dir / 'Management' / 'Camera' / 'Daily' / f'{self.started_at:%Y-%m-%d}.csv'),
+            'camera_record_json': str(self.patient_dir / 'Management' / 'Camera' / 'Records' / f'{self.sensor_file_id}.json'),
             # 구성 항목: 영상 녹화 여부(`'record_video'`)에 영상 녹화 여부(`record_video`); 저장 영상의 초당 프레임 수(`'video_fps'`)에 저장 영상의 초당 프레임 수(`self.video_fps`)을 지정합니다.
             'record_video': record_video, 'video_fps': self.video_fps,
             # 구성 항목: 게임 목표 점수(`'target_score'`)에 게임 목표 점수(`target_score`)을 지정합니다.
@@ -261,6 +282,11 @@ class SessionLog:
             'scoring_mode': 'REPETITIONS' if mode == 'CALIBRATION' else 'POINTS',
         # 앞에서 여러 줄로 작성한 호출·자료 구조·표현식의 괄호를 닫아 구성을 마칩니다.
         }
+        # 등록 차수 폴더 전체를 복사해도 파일을 찾을 수 있도록 상대 경로도 함께 보관합니다.
+        for field in ('frame_csv', 'skeleton_npz', 'video_mp4', 'reps_csv', 'manifest_json', 'camera_record_json'):
+            # 녹화를 사용하지 않는 내부 테스트에서는 video_mp4가 None일 수 있습니다.
+            path = self.info.get(field)
+            self.info[f'{field}_relative'] = Path(path).relative_to(self.patient_dir).as_posix() if path else None
         # 아래 작업을 시도하고 예외 또는 종료 시 뒤의 except·finally 정리 규칙을 적용합니다.
         try:
             # `write_json_atomic(self.base.with_suffix('.json'), {**self.info, 'status': 'RECORDING'})`을 호출하여 해당 단계의 작업을 수행합니다.
@@ -369,6 +395,11 @@ class SessionLog:
         values = [np.nan if side.get('val') is None else float(side['val']) for side in (left, right)]
         # `row` 값에 키 'timestamp_ms', 'frame_idx', 'video_frame_idx', 'motion_name', 'metric_type', 'is_occluded', 'calib_step', 't…로 구성한 사전을 저장합니다. 대상: `row`.
         row = {'timestamp_ms': round(elapsed_sec * 1000, 3), 'frame_idx': frame_idx,
+               # time은 문서와 동일하게 수집 구간 시작 이후 경과 시간(초)입니다.
+               'time': float(elapsed_sec), 'play_session_id': self.play_session_id,
+               'exercise_record_id': self.exercise_record_id, 'sensor_file_id': self.sensor_file_id,
+               'source': 'Camera', 'collection_phase': self.collection_phase,
+               'metric_unit': 'deg' if metric_type == 'ANGLE' else 'ratio' if metric_type == 'RATIO' else 'body_length',
                # 구성 항목: 저장 영상에서 대응하는 프레임 번호(`'video_frame_idx'`)에 저장 영상에서 대응하는 프레임 번호(`video_frame_idx`); 운동 name(`'motion_name'`)에 운동 설정의 식별 이름(`self.exercise_name`)을 지정합니다.
                'video_frame_idx': video_frame_idx, 'motion_name': self.exercise_name,
                # 구성 항목: 측정 방식(각도·좌표·길이·비율)(`'metric_type'`)에 측정 방식(각도·좌표·길이·비율)(`metric_type`); 필수 관절이 가려졌거나 유효하지 않은지 여부(`'is_occluded'`)에 필수 관절이 가려졌거나 유효하지 않은지 여부(`is_occluded`); 캘리브레이션 전체 진행 단계(`'calib_step'`)에 캘리브레이션 전체 진행 단계(`calib_step`)을 지정합니다.
@@ -492,7 +523,10 @@ class SessionLog:
                     # 구성 항목: 입력 영상의 가로/세로 비율(`image_aspect_ratio`)에 `np.asarray(self.image_aspect_ratios, dtype=np.float32)` 호출 결과; `dtype` 값(`dtype`)에 `np.float32` 값(`np.float32`)을 지정합니다.
                     image_aspect_ratio=np.asarray(self.image_aspect_ratios, dtype=np.float32),
                     # 구성 항목: 환자 식별 번호의 기존 필드명(`player_id`)에 `self.patient_dir.name` 값(`self.patient_dir.name`); 운동 설정의 식별 이름(`exercise_name`)에 운동 설정의 식별 이름(`self.exercise_name`)을 지정합니다.
-                    player_id=self.patient_dir.name, exercise_name=self.exercise_name,
+                    player_id=self.patient_id, exercise_name=self.exercise_name,
+                    play_session_id=self.play_session_id, exercise_record_id=self.exercise_record_id,
+                    sensor_file_id=self.sensor_file_id, data_version=self.info['data_version'],
+                    registration=self.info['registration'], slot=self.slot,
                     # 구성 항목: 현재 측정 세션 식별자(`session_id`)에 현재 측정 세션 식별자(`self.session_id`); 측정 세션 type(`session_type`)에 실행 모드(`self.mode`)을 지정합니다.
                     session_id=self.session_id, session_type=self.mode)
             # `temporary.replace(npz_path)`을 호출하여 임시 파일을 최종 경로로 교체합니다.
@@ -508,7 +542,10 @@ class SessionLog:
             # `writer.writeheader()`을 호출하여 CSV의 열 이름 행을 기록합니다.
             writer.writeheader()
             # `writer.writerows(({**row, 'session_id': self.session_id} for row in rep_rows))`을 호출하여 CSV에 여러 행을 기록합니다.
-            writer.writerows({**row, 'session_id': self.session_id} for row in rep_rows)
+            # 반복 파일 하나만 분리해 읽어도 Unity 플레이·운동 기록에 연결할 수 있습니다.
+            writer.writerows({**row, 'session_id': self.session_id, 'play_session_id': self.play_session_id,
+                              'exercise_record_id': self.exercise_record_id, 'sensor_file_id': self.sensor_file_id}
+                             for row in rep_rows)
         # 저장·종료 결과 요약에 키 'status', 'saved_frames', 'saved_reps_count', 'left_reps', 'right_reps', 'left_total_score', 'right_total_sco…로 구성한 사전을 저장합니다. 대상: `summary`.
         summary = {**self.info, 'status': status, 'saved_frames': len(self.timestamps),
                    # 구성 항목: saved 반복 횟수 횟수(`'saved_reps_count'`)에 `len(rep_rows)` 호출 결과; 왼쪽 반복 횟수(`'left_reps'`)에 `sum((row['side'] == 'left' for row in rep_rows))` 호출 결과를 지정합니다.
@@ -529,7 +566,13 @@ class SessionLog:
                    'video_duration_sec': self._video_frames / self.video_fps}
         # 칼로리·속도는 계산 구현이 없으므로 임의로 채우지 않고 빈 값으로 둡니다.
         # `daily` 값에 `Path(self.info['gamedata_csv'])` 호출 결과를 저장합니다. 대상: `daily`.
-        daily = Path(self.info['gamedata_csv'])
+        # 원시 파일은 시작일에 유지하고 일별 요약만 종료일(KST)에 기록합니다.
+        ended_at = self.started_at + timedelta(seconds=summary['duration_sec'])
+        summary['ended_at'] = ended_at.isoformat()
+        daily = self.patient_dir / 'Management' / 'Camera' / 'Daily' / f'{ended_at:%Y-%m-%d}.csv'
+        daily.parent.mkdir(parents=True, exist_ok=True)
+        summary['gamedata_csv'] = str(daily)
+        self.info['gamedata_csv'] = str(daily)
         # `existing_rows` 값에 순서·구성을 지정한 `[]`을 저장합니다. 대상: `existing_rows`.
         existing_rows = []
         # 조건 `daily.exists()`을 만족하는 경우에만 아래 분기를 실행합니다.
@@ -554,6 +597,10 @@ class SessionLog:
         daily_temporary.replace(daily)
         # `write_json_atomic(self.base.with_suffix('.json'), summary)`을 호출하여 해당 단계의 작업을 수행합니다.
         write_json_atomic(self.base.with_suffix('.json'), summary)
+        # 플레이 결과 원본은 건드리지 않고 카메라 관리 원본을 별도로 저장합니다.
+        camera_record = Path(self.info['camera_record_json'])
+        camera_record.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(camera_record, summary)
         # 요약에 저장·종료 결과 요약(`summary`)을 저장합니다. 대상: `self._summary`.
         self._summary = summary
         # 현재 함수 처리를 끝내고 `dict(summary)` 호출 결과를 호출한 쪽으로 반환합니다.

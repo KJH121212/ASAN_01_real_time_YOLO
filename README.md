@@ -8,6 +8,8 @@
 
 ## 1. 실행 방법
 
+로그 기본 경로는 `PatientData/버전/환자번호/등록차수`입니다. Unity와 공통 플레이·운동 ID를 연결하고 카메라 전용 파일을 저장하는 방법은 [PatientData 카메라 로그 규격](docs/patient_data_camera.md)을 참고하세요. 기존 `data` 로그는 자동 이동하지 않습니다.
+
 exe 빌드와 Streamlit 재시작 후 남은 측정 연결 복구는 [exe 실행·연결 복구 안내](docs/exe_and_recovery.md)에 정리했습니다.
 
 프로젝트 루트에서 모델과 의존성이 설치된 환경을 사용합니다.
@@ -118,7 +120,7 @@ flowchart TD
 
 ### `app.py` — Streamlit 화면
 
-서버 주소, 환자 식별값, 운동 종류, 실행 모드, 카메라 번호, 영상 경로, 목표 점수 등을 입력받습니다. 영상은 항상 저장하며, 화면 하단 버튼으로 `data`의 영상을 일괄 오버레이할 수 있습니다. 세션을 시작하면 `StreamlitSessionClient`를 만들고 `st.session_state`에 보관합니다.
+서버 주소, 환자 식별값, 운동 종류, 실행 모드, 카메라 번호, 영상 경로, 목표 점수와 PatientData 공통 ID를 입력받습니다. 영상은 항상 저장하며, 화면 하단 버튼으로 `PatientData` 또는 직접 지정한 기존 로그의 영상을 일괄 오버레이할 수 있습니다. 세션을 시작하면 `StreamlitSessionClient`를 만들고 `st.session_state`에 보관합니다.
 
 주요 함수:
 

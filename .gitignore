@@ -10,6 +10,8 @@
 /dist/ASANSocketServer/
 # 빌드 명령이 자동 생성하는 PyInstaller 명세입니다.
 /ASANSocketServer.spec
+# 버전·환자·등록 차수별 IMU 및 카메라 원본 기록은 소스 저장소에서 제외합니다.
+/PatientData/
 
 # 로컬 가상환경 폴더
 # 로컬 가상환경 폴더를 제외합니다.

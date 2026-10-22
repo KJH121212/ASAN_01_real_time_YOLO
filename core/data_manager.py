@@ -19,6 +19,8 @@ from pathlib import Path
 import numpy as np
 # `core.session_log`에서 `KST`, `SessionLog`, `default_log_root`, `path_component`, `write_json_atomic` 기능을 가져옵니다.
 from core.session_log import KST, SessionLog, default_log_root, path_component, write_json_atomic
+# 공통 버전 폴더와 등록 차수 검증 규칙입니다.
+from core.patient_data import DEFAULT_DATA_VERSION, registration_number, version_folder
 
 
 # 불러오기 exercise 설정 처리 함수입니다. 입력을 아래 순서로 처리하고 반환문 또는 객체 상태로 결과를 전달합니다.
@@ -95,9 +97,18 @@ class DataManager:
     """Patient profiles and session logs under a configurable external root."""
 
     # 생성자: 전달받은 설정을 보관하고 이 객체가 사용할 상태·누적값·자원을 초기화합니다.
-    def __init__(self, player_id="patient_1", patient_name="Unknown", log_root=None, patient_metadata=None):
+    def __init__(self, player_id="0001", patient_name="Unknown", log_root=None, patient_metadata=None,
+                 data_version=DEFAULT_DATA_VERSION, registration=1):
         # 환자 식별 번호의 기존 필드명에 `path_component(player_id, 'patient_id')` 호출 결과를 저장합니다. 대상: `self.player_id`.
         self.player_id = path_component(player_id, "patient_id")
+        # 숫자 환자번호는 앞의 0을 포함한 네 자리로 보관합니다. 비숫자 ID는 기존 테스트 호환용입니다.
+        if self.player_id.isdigit():
+            if len(self.player_id) > 4:
+                raise ValueError('patient_id must have at most four digits')
+            self.player_id = self.player_id.zfill(4)
+        # 환자번호가 같아도 등록 차수·버전이 다르면 새 폴더를 사용합니다.
+        self.data_version = version_folder(data_version)
+        self.registration = registration_number(registration)
         # `self.patient_name` 값에 `patient_name` 값(`patient_name`)을 저장합니다. 대상: `self.patient_name`.
         self.patient_name = patient_name
         # 세션 로그를 저장하는 최상위 폴더에 `log_root`이면 `Path(log_root).expanduser().resolve()`, 아니면 `default_log_root()`을 저장합니다. 대상: `self.log_root`.
@@ -112,14 +123,16 @@ class DataManager:
                     f"로그 저장 폴더는 영상 파일이 아닌 폴더로 지정하세요: {directory}. "
                     # 앞줄에서 시작한 식·인수·자료 구조를 `"영상 경로는 Video File Path에 입력하세요.")` 내용으로 이어서 구성합니다.
                     "영상 경로는 Video File Path에 입력하세요.")
-        # 환자별 로그 폴더에 계산식 `self.log_root / self.player_id`의 결과를 저장합니다. 대상: `self.patient_dir`.
-        self.patient_dir = self.log_root / self.player_id
+        # 버전·환자번호·등록 차수가 모두 같은 경우에만 같은 저장 영역을 사용합니다.
+        self.patient_dir = self.log_root / self.data_version / self.player_id / self.registration
         # `self.patient_dir.mkdir(parents=True, exist_ok=True)`을 호출하여 필요한 폴더를 생성합니다.
         self.patient_dir.mkdir(parents=True, exist_ok=True)
-        # json 경로에 계산식 `self.patient_dir / f'{self.player_id}.json'`의 결과를 저장합니다. 대상: `self.json_path`.
-        self.json_path = self.patient_dir / f"{self.player_id}.json"
-        # 부가 정보 경로에 계산식 `self.patient_dir / 'patient_metadata.csv'`의 결과를 저장합니다. 대상: `self.metadata_path`.
-        self.metadata_path = self.patient_dir / "patient_metadata.csv"
+        # Unity의 Records·Recovery 폴더를 건드리지 않는 카메라 전용 관리 영역입니다.
+        self.camera_management = self.patient_dir / 'Management' / 'Camera'
+        self.camera_management.mkdir(parents=True, exist_ok=True)
+        self.json_path = self.camera_management / 'profile.json'
+        # 카메라 측에 제공된 환자 정보는 Unity 소유 파일과 분리해 관리합니다.
+        self.metadata_path = self.camera_management / "patient_metadata.csv"
         # 기존 호환 json 경로에 계산식 `Path(__file__).resolve().parent.parent / 'data' / self.player_id / f'{self.player_id}.json'`의 결과를 저장합니다. 대상: `self.legacy_json_path`.
         self.legacy_json_path = Path(__file__).resolve().parent.parent / "data" / self.player_id / f"{self.player_id}.json"
         # 환자의 키·몸무게 등 부가 정보에 계산식 `patient_metadata or {}`의 결과를 저장합니다. 대상: `self.patient_metadata`.
@@ -183,7 +196,8 @@ class DataManager:
     # begin 측정 세션 처리 함수입니다. 입력을 아래 순서로 처리하고 반환문 또는 객체 상태로 결과를 전달합니다.
     def begin_session(self, exercise_name, mode, session=None, round_number=1, set_number=1,
                       # 이 줄의 입력 인수: `record_video` = 영상 녹화 여부; `video_fps` = 저장 영상의 초당 프레임 수; `started_at` = `started_at` 값; `target_score` = 게임 목표 점수. 기본값·형식은 아래 선언을 따릅니다.
-                      record_video=False, video_fps=30.0, started_at=None, target_score=None):
+                      record_video=False, video_fps=30.0, started_at=None, target_score=None,
+                      play_session_id=None, exercise_record_id=None, slot=1):
         # 조건 `self.session_log is not None and self.session_log._summary is None`을 만족하는 경우에만 아래 분기를 실행합니다.
         if self.session_log is not None and self.session_log._summary is None:
             # 이 조건에서는 처리를 계속할 수 없으므로 `RuntimeError('Finish the active log before starting another')` 예외를 발생시킵니다.
@@ -193,7 +207,10 @@ class DataManager:
         # 현재 세션의 CSV·NPZ·MP4 기록 객체에 `SessionLog(self.patient_dir, exercise_name, mode, session, round_number, set_number, record_video, video_fps, started_at, target_score)` 호출 결과를 저장합니다. 대상: `self.session_log`.
         self.session_log = SessionLog(self.patient_dir, exercise_name, mode, session,
                                       # 앞줄에서 시작한 식·인수·자료 구조를 `round_number, set_number, record_video, video_fps, started_at, target_score)` 내용으로 이어서 구성합니다.
-                                      round_number, set_number, record_video, video_fps, started_at, target_score)
+                                      round_number, set_number, record_video, video_fps, started_at, target_score,
+                                      play_session_id=play_session_id, exercise_record_id=exercise_record_id,
+                                      slot=slot, patient_id=self.player_id, data_version=self.data_version,
+                                      registration=self.registration)
         # `self.buf_timestamps` 값에 프레임별 경과 시각 목록(`self.session_log.timestamps`)을 저장합니다. 대상: `self.buf_timestamps`.
         self.buf_timestamps = self.session_log.timestamps
         # buf 측정값에 측정값(`self.session_log.values`)을 저장합니다. 대상: `self.buf_values`.
@@ -211,13 +228,19 @@ class DataManager:
         data = {}
         # 새 캘리브레이션을 처음 저장할 때도 기존 프로필의 다른 내용은 유지합니다.
         # 읽을 원본 경로 또는 데이터에 `self.json_path.exists()`이면 `self.json_path`, 아니면 `self.legacy_json_path`을 저장합니다. 대상: `source`.
-        source = self.json_path if self.json_path.exists() else self.legacy_json_path
+        # 재등록한 환자에게 과거 등록의 개인 가동 범위를 복사하지 않습니다.
+        source = self.json_path
+        # 이전 위치의 프로필 보조 읽기는 최초 버전·최초 등록에만 적용합니다.
+        if not source.exists() and self.registration == '01' and self.data_version == DEFAULT_DATA_VERSION:
+            source = next((path for path in (self.log_root / self.player_id / f'{self.player_id}.json', self.legacy_json_path) if path.exists()), self.json_path)
         # 조건 `source.exists()`을 만족하는 경우에만 아래 분기를 실행합니다.
         if source.exists():
             # 데이터에 JSON 문자열을 해석한 Python 값(`json.loads(source.read_text(encoding='utf-8'))`)을 저장합니다. 대상: `data`.
             data = json.loads(source.read_text(encoding="utf-8"))
         # `data.update(patient_id=self.player_id, patient_name=self.patient_name)`을 호출하여 해당 단계의 작업을 수행합니다.
         data.update(patient_id=self.player_id, patient_name=self.patient_name)
+        # 등록·버전 정보를 프로필에도 기록하여 폴더를 옮겼을 때 출처를 확인합니다.
+        data.update(data_version=self.data_version, registration=self.registration)
         # `data.setdefault('custom_thresholds', {})[exercise_name]` 값에 가동 범위 기준 데이터(`threshold_data`)을 저장합니다. 대상: `data.setdefault('custom_thresholds', {})[exercise_name]`.
         data.setdefault("custom_thresholds", {})[exercise_name] = threshold_data
         # `data.setdefault('calibration_history', []).append({'exercise_name': exercise_name, 'calibration_date': datetime.now(KST).isoformat(), 'is_confirmed': is_confirmed, 'thre…`을 호출하여 항목 하나를 끝에 추가합니다.
@@ -236,7 +259,9 @@ class DataManager:
     # 조회 custom 가동 범위 기준 처리 함수입니다. 입력을 아래 순서로 처리하고 반환문 또는 객체 상태로 결과를 전달합니다.
     def get_custom_threshold(self, exercise_name):
         # `(self.json_path, self.legacy_json_path)`에서 항목을 차례로 꺼내 `source`에 넣고 아래 처리를 반복합니다.
-        for source in (self.json_path, self.legacy_json_path):
+        # 구형 프로필은 첫 등록에 한해서 보조로 읽고 원래 파일은 유지합니다.
+        sources = (self.json_path, self.log_root / self.player_id / f'{self.player_id}.json', self.legacy_json_path) if self.registration == '01' and self.data_version == DEFAULT_DATA_VERSION else (self.json_path,)
+        for source in sources:
             # 조건 `not source.exists()`을 만족하는 경우에만 아래 분기를 실행합니다.
             if not source.exists():
                 # 현재 항목의 남은 처리를 건너뛰고 반복문의 다음 항목으로 이동합니다.

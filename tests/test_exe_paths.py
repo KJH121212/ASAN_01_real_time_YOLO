@@ -18,7 +18,7 @@ class ExePathTests(unittest.TestCase):
         executable = str(Path('dist/ASANSocketServer/ASANSocketServer.exe').resolve())
         # PyInstaller의 실행 플래그와 실행 경로를 모의합니다.
         with patch('core.session_log.sys.frozen', True, create=True), patch('core.session_log.sys.executable', executable), patch.dict('os.environ', {}, clear=True):
-            self.assertEqual(default_log_root(), Path(executable).parent / 'data')
+            self.assertEqual(default_log_root(), Path(executable).parent / 'PatientData')
 
     # 사용자가 지정한 저장 경로는 exe의 기본 경로보다 우선합니다.
     def test_environment_path_overrides_frozen_default(self):

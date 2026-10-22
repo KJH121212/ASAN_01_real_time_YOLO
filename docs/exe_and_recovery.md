@@ -12,7 +12,7 @@ python -m pip install pyinstaller
 
 결과는 `dist/ASANSocketServer/ASANSocketServer.exe`입니다. **ASANSocketServer 폴더 전체**를 배포하고 그 안의 exe를 실행하세요. exe 파일 하나만 복사하면 의존 라이브러리와 모델이 빠집니다. 실행하면 `ws://127.0.0.1:8080` 소켓을 열고 AI 모델을 준비합니다. 측정 시작 명령을 받기 전까지 카메라를 열거나 계속 추론하지 않습니다. 모델 준비 전에는 기존과 같이 준비 상태 메시지가 옵니다.
 
-기본 로그는 exe 옆 `data`에 기록합니다. 해당 위치는 쓰기 가능한 폴더여야 합니다. `ASAN_LOG_ROOT` 환경 변수 또는 시작 JSON의 `log_root`로 변경할 수 있습니다. 모델과 운동 설정은 배포 폴더의 `_internal/configs`에 포함됩니다. 실행 중인 원본 프로젝트의 JSON을 수정해도 이미 빌드한 배포본에는 반영되지 않습니다.
+기본 로그는 exe 옆 `PatientData`에 기록합니다. 해당 위치는 쓰기 가능한 폴더여야 합니다. `ASAN_LOG_ROOT` 환경 변수 또는 시작 JSON의 `log_root`로 변경할 수 있습니다. Unity와 폴더를 공유하는 방법은 [PatientData 카메라 로그](patient_data_camera.md)를 참고하세요. 모델과 운동 설정은 배포 폴더의 `_internal/configs`에 포함됩니다. 실행 중인 원본 프로젝트의 JSON을 수정해도 이미 빌드한 배포본에는 반영되지 않습니다.
 
 PyTorch·CUDA 의존 파일의 크기 때문에 폴더 배포 방식을 사용합니다. 단일 exe 방식은 실행할 때 임시 폴더에 파일을 풀므로 시작이 더 느릴 수 있습니다. [PyInstaller 공식 설명](https://pyinstaller.org/en/stable/operating-mode.html)
 

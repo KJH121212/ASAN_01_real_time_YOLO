@@ -14,7 +14,7 @@
 
 1. `python network/socket_server.py`와 `streamlit run app.py`를 실행합니다.
 2. 측정 중이라면 먼저 세션을 종료해 로그를 확정합니다.
-3. 화면 하단 **저장 영상 일괄 오버레이**에서 영상 폴더를 확인합니다. 기본값은 프로젝트의 `data`입니다.
+3. 화면 하단 **저장 영상 일괄 오버레이**에서 영상 폴더를 확인합니다. 기본값은 `PatientData`입니다. 기존 `data` 로그도 폴더를 직접 선택해 처리할 수 있습니다.
 4. **data 영상 전체 오버레이 생성**을 누릅니다.
 5. 영상 수·현재 파일·프레임 진행률과 영상별 결과를 확인합니다.
 
@@ -27,9 +27,9 @@
 영상과 같은 이름의 CSV/NPZ를 우선 사용합니다.
 
 ```text
-session1_round1_set1.mp4
-session1_round1_set1.csv
-session1_round1_set1.npz
+R01_S02_Set01_Play_Camera_FILE_ID.mp4
+R01_S02_Set01_Play_Camera_FILE_ID.csv
+R01_S02_Set01_Play_Camera_FILE_ID.npz
 ```
 
 CSV의 `video_frame_idx`로 영상과 측정값을 맞추고, NPZ의 관절 좌표로 스켈레톤을 그립니다.
@@ -37,7 +37,7 @@ NPZ가 없으면 바와 측정값만 표시합니다. 프레임 대응 정보가
 원래 분석이 영상보다 먼저 끝났다면 이후 구간에는 ANALYSIS ENDED를 표시하고 새 측정값을 만들어내지 않습니다.
 
 로그가 없으면 **로그 없는 영상도 소켓 서버에서 분석** 옵션에 따라 처리합니다.
-기본값은 켜짐이며 소켓 서버가 필요합니다. 폴더/파일명에서 운동을 찾아 TEST 모드로 전체 영상을 분석합니다.
+기본값은 켜짐이며 소켓 서버가 필요합니다. 같은 이름의 JSON 명세에서 운동을 우선 찾고, 없으면 폴더/파일명에서 찾아 TEST 모드로 전체 영상을 분석합니다.
 이 경우 개인 캘리브레이션 프로필을 재사용하지 않는 격리된 실험 ID와 기본 ROM을 사용합니다.
 서버가 복사 녹화한 영상과 분석 로그는 해당 작업의 `analysis` 폴더에 저장합니다.
 운동을 식별할 수 없으면 SKIPPED로 표시합니다. 옵션을 끄면 기존 로그가 있는 영상만 처리합니다.
@@ -60,7 +60,7 @@ leg_raise는 hip_knee_flexion, leg_extension은 knee_extension으로 연결합�
 ## 결과 위치
 
 ```text
-data/_overlays/<작업 시각>/
+PatientData/_overlays/<작업 시각>/
 ├─ results.csv
 ├─ videos/<원본 상대 폴더>/<원본 파일명>.overlay.mp4
 └─ analysis/  # 로그 없는 영상을 서버에서 분석한 경우

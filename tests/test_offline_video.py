@@ -257,7 +257,10 @@ class OfflineVideoTests(unittest.IsolatedAsyncioTestCase):
         # `self.server.process_offline_video(self.ws, {**self.packet, 'session': 2, 'round': 3, 'set': 4, 'record_video': False})`을 호출하여 해당 단계의 작업을 수행합니다. 완료될 때까지 비동기로 기다립니다.
         await self.server.process_offline_video(self.ws, {**self.packet,
             # 구성 항목: 측정 세션(`'session'`)에 2; `round` 값(`'round'`)에 3; 설정(`'set'`)에 4; 영상 녹화 여부(`'record_video'`)에 False을 지정합니다.
-            'session': 2, 'round': 3, 'set': 4, 'record_video': False})
+            'session': 2, 'round': 3, 'set': 4, 'record_video': False,
+            # 서버 입력이 실제 DataManager와 프레임 파일까지 전달되는지 확인합니다.
+            'data_version': 'v2.3.4(27)', 'registration': '02', 'play_session_id': 'PLAY_OFFLINE',
+            'exercise_record_id': 'EX_OFFLINE', 'slot': 5})
         # 함수 또는 처리 단계의 결과에 JSON 문자열을 해석한 Python 값(`json.loads(self.ws.send.call_args_list[-1].args[0])`)을 저장합니다. 대상: `result`.
         result = json.loads(self.ws.send.call_args_list[-1].args[0])
         # 저장·종료 결과 요약에 계산식 `result['summary']`의 결과를 저장합니다. 대상: `summary`.
@@ -265,7 +268,12 @@ class OfflineVideoTests(unittest.IsolatedAsyncioTestCase):
         # 검증문 `self.assertTrue(summary['record_video'])`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
         self.assertTrue(summary['record_video'])
         # 검증문 `self.assertEqual(Path(summary['frame_csv']).stem, 'session2_round3_set4')`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-        self.assertEqual(Path(summary['frame_csv']).stem, 'session2_round3_set4')
+        self.assertEqual(Path(summary['frame_csv']).stem, f"R03_S05_Set04_Play_Camera_{summary['sensor_file_id']}")
+        # 공통 ID가 입력대로 유지되고 서버의 측정 ID와 혼동되지 않는지 확인합니다.
+        self.assertEqual(summary['play_session_id'], 'PLAY_OFFLINE')
+        self.assertEqual(summary['exercise_record_id'], 'EX_OFFLINE')
+        self.assertEqual(summary['data_version'], 'v2.3.4(27)')
+        self.assertEqual(summary['registration'], '02')
         # `('frame_csv', 'skeleton_npz', 'video_mp4', 'gamedata_csv')`에서 항목을 차례로 꺼내 `key`에 넣고 아래 처리를 반복합니다.
         for key in ('frame_csv', 'skeleton_npz', 'video_mp4', 'gamedata_csv'):
             # 검증문 `self.assertTrue(Path(summary[key]).is_relative_to(Path(self.temporary.name)))`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.

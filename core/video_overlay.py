@@ -60,6 +60,17 @@ def find_videos(root):
 
 # `infer_exercise` 값 처리 함수입니다. 입력을 아래 순서로 처리하고 반환문 또는 객체 상태로 결과를 전달합니다.
 def infer_exercise(path):
+    # 새 PatientData 경로에는 운동 이름이 없으므로 함께 저장된 명세에서 먼저 확인합니다.
+    path = Path(path)
+    try:
+        # 기존 파일도 같은 이름의 JSON이 있으면 실제 기록한 운동을 우선합니다.
+        metadata = json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
+        name = metadata.get('motion_name', metadata.get('exercise_name'))
+        if name in EXERCISES:
+            return EXERCISES[name]
+    except (OSError, ValueError, TypeError, AttributeError):
+        # 원본 영상에 명세가 없으면 기존 폴더명·파일명 방식으로 찾습니다.
+        pass
     # `reversed(path.parts)`에서 항목을 차례로 꺼내 `part`에 넣고 아래 처리를 반복합니다.
     for part in reversed(path.parts):
         # 조건 `part in EXERCISES`을 만족하는 경우에만 아래 분기를 실행합니다.

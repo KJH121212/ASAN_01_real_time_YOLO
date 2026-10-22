@@ -191,7 +191,8 @@ class ServerClientCompletionTests(unittest.IsolatedAsyncioTestCase):
         # 캘리브레이션·본 운동 진행 제어기에 `SimpleNamespace(mode='MAIN', data_manager=SimpleNamespace(session_log=SimpleNamespace(session_id='session', info={})), motion_engine=SimpleNamespace(exercise_name='test'…` 호출 결과를 저장합니다. 대상: `self.server.controller`.
         self.server.controller = SimpleNamespace(mode='MAIN', data_manager=SimpleNamespace(
             # 구성 항목: 관절 측정값 계산 및 반복 판정 엔진(`motion_engine`)에 `SimpleNamespace(exercise_name='test', mode='MAIN', threshold_version=3)` 호출 결과; 현재 세션의 CSV·NPZ·MP4 기록 객체(`session_log`)에 `SimpleNamespace(session_id='session', info={})` 호출 결과; 현재 측정 세션 식별자(`session_id`)에 'session'; `info` 값(`info`)에 빈 사전을 지정합니다.
-            session_log=SimpleNamespace(session_id='session', info={})), motion_engine=SimpleNamespace(
+            session_log=SimpleNamespace(session_id='session', play_session_id='play', exercise_record_id='exercise',
+                                        sensor_file_id='session', info={})), motion_engine=SimpleNamespace(
             # 구성 항목: 운동 설정의 식별 이름(`exercise_name`)에 'test'; 실행 모드(`mode`)에 'MAIN'; 현재 가동 범위 설정의 변경 번호(`threshold_version`)에 3을 지정합니다.
             exercise_name='test', mode='MAIN', threshold_version=3))
         # 저장 측정 세션 파일에 `Mock(return_value={'saved_reps_count': 4})` 호출 결과를 저장합니다. 대상: `self.server._save_session_files`.

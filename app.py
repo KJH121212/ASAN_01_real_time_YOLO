@@ -627,6 +627,13 @@ def main():
             index=0, disabled=running)
         # 환자 식별 번호의 기존 필드명에 `st.text_input('Patient ID', value='0000', disabled=running)` 호출 결과를 저장합니다. 대상: `player_id`.
         player_id = st.text_input("Patient ID", value="0000", disabled=running)
+        # Unity와 동일한 버전·등록 차수·플레이 ID를 입력하면 같은 환자 폴더로 연결됩니다.
+        data_version = st.text_input("Data Version", value="v1.0.0(0)", disabled=running)
+        registration = st.number_input("Registration", min_value=1, max_value=99, value=1, step=1, disabled=running)
+        play_session_id = st.text_input("Unity Play Session ID", value="", disabled=running)
+        exercise_record_id = st.text_input("Unity Exercise Record ID", value="", disabled=running)
+        slot_number = st.number_input("Exercise Slot", min_value=0, value=1, step=1, disabled=running)
+        st.caption("등록 차수는 Unity가 발급한 값입니다. 공통 ID를 비우면 단독 테스트용 ID를 생성합니다.")
         # `patient_name` 값에 `st.text_input('Patient Name', value='김지후', disabled=running)` 호출 결과를 저장합니다. 대상: `patient_name`.
         patient_name = st.text_input("Patient Name", value="김지후", disabled=running)
         # 세션 로그를 저장하는 최상위 폴더에 `st.text_input('로그 저장 폴더 (서버 기준)', value=str(default_log_root()), disabled=running, help='분석 결과를 저장할 폴더입니다. 영상 파일 경로는 Video File Path에 입력하세요.')` 호출 결과를 저장합니다. 대상: `log_root`.
@@ -742,6 +749,9 @@ def main():
                 else:
                     # `cfg` 값에 `dict(player_id=player_id, patient_name=patient_name, exercise_name=exercise_name, mode=mode, target_reps=target_reps, target_score=float(target_reps), finish_delay_secon…` 호출 결과를 저장합니다. 대상: `cfg`.
                     cfg = dict(player_id=player_id, patient_name=patient_name,
+                               # 공통 플레이 식별 정보이며 기존 숫자 Session과는 별개입니다.
+                               data_version=data_version, registration=int(registration), slot=int(slot_number),
+                               play_session_id=play_session_id or None, exercise_record_id=exercise_record_id or None,
                                # 구성 항목: 운동 설정의 식별 이름(`exercise_name`)에 운동 설정의 식별 이름(`exercise_name`); 실행 모드(`mode`)에 실행 모드(`mode`); 목표 반복 횟수(`target_reps`)에 목표 반복 횟수(`target_reps`)을 지정합니다.
                                exercise_name=exercise_name, mode=mode, target_reps=target_reps,
                                # 구성 항목: 게임 목표 점수(`target_score`)에 `float(target_reps)` 호출 결과; 종료 delay 초(`finish_delay_seconds`)에 1.5을 지정합니다.
@@ -849,7 +859,7 @@ def main():
     # `st.subheader('저장 영상 일괄 오버레이')`을 호출하여 해당 단계의 작업을 수행합니다.
     st.subheader('저장 영상 일괄 오버레이')
     # 오버레이 최상위 경로에 `st.text_input('오버레이 영상 폴더', value=str(Path(get_root_dir()) / 'data'), disabled=overlay_running)` 호출 결과를 저장합니다. 대상: `overlay_root`.
-    overlay_root = st.text_input('오버레이 영상 폴더', value=str(Path(get_root_dir()) / 'data'),
+    overlay_root = st.text_input('오버레이 영상 폴더', value=str(default_log_root()),
                                  # 구성 항목: `disabled` 값(`disabled`)에 오버레이 running(`overlay_running`)을 지정합니다.
                                  disabled=overlay_running)
     # analyze 결측에 `st.checkbox('로그 없는 영상도 소켓 서버에서 분석', value=True, disabled=overlay_running)` 호출 결과를 저장합니다. 대상: `analyze_missing`.

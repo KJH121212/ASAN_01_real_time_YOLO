@@ -102,7 +102,7 @@ class SessionLogTests(unittest.TestCase):
         # `info` 값에 `self.begin(round_number=2, set_number=3)` 호출 결과를 저장합니다. 대상: `info`.
         info = self.begin(round_number=2, set_number=3)
         # 테스트에서 기대하는 결과에 계산식 `self.root / '0001' / '260101' / 'biceps_curl' / 'session1_round2_set3.csv'`의 결과를 저장합니다. 대상: `expected`.
-        expected = self.root / '0001' / '260101' / 'biceps_curl' / 'session1_round2_set3.csv'
+        expected = self.root / 'v1.0.0(0)' / '0001' / '01' / 'Sensors' / '2026-01-01' / info['play_session_id'] / 'Camera' / f"R02_S01_Set03_Play_Camera_{info['sensor_file_id']}.csv"
         # 검증문 `self.assertEqual(Path(info['frame_csv']), expected)`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
         self.assertEqual(Path(info['frame_csv']), expected)
         # `self.append()`을 호출하여 항목 하나를 끝에 추가합니다.
@@ -165,7 +165,7 @@ class SessionLogTests(unittest.TestCase):
             # 검증문 `self.assertTrue(Path(info[field]).is_file())`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
             self.assertTrue(Path(info[field]).is_file())
             # 검증문 `self.assertEqual(Path(info[field]).stem, 'session1_round1_set1')`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-            self.assertEqual(Path(info[field]).stem, 'session1_round1_set1')
+            self.assertEqual(Path(info[field]).stem, f"R01_S01_Set01_Play_Camera_{info['sensor_file_id']}")
         # OpenCV 영상 입력 장치에 `cv2.VideoCapture(info['video_mp4'])` 호출 결과를 저장합니다. 대상: `cap`.
         cap = cv2.VideoCapture(info['video_mp4'])
         # 아래 작업을 시도하고 예외 또는 종료 시 뒤의 except·finally 정리 규칙을 적용합니다.
@@ -198,7 +198,9 @@ class SessionLogTests(unittest.TestCase):
         # `second` 값에 `self.begin()` 호출 결과를 저장합니다. 대상: `second`.
         second = self.begin()
         # 검증문 `self.assertTrue(second['frame_csv'].endswith('session1_round1_set1_take2.csv'))`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-        self.assertTrue(second['frame_csv'].endswith('session1_round1_set1_take2.csv'))
+        # 반복 실행은 같은 처방 번호라도 새 파일 ID로 구분하고 원본을 덮어쓰지 않습니다.
+        self.assertNotEqual(first['sensor_file_id'], second['sensor_file_id'])
+        self.assertNotEqual(first['frame_csv'], second['frame_csv'])
         # `self.manager.finish_session([], status='STOPPED')`을 호출하여 해당 단계의 작업을 수행합니다.
         self.manager.finish_session([], status='STOPPED')
         # 검증문 `self.assertEqual(Path(first['frame_csv']).read_bytes(), original)`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
@@ -350,13 +352,13 @@ class SessionLogTests(unittest.TestCase):
                                          # 구성 항목: `round_number` 값(`round_number`)에 0; 설정 number(`set_number`)에 0; `started_at` 값(`started_at`)에 시작(`self.start`)을 지정합니다.
                                          round_number=0, set_number=0, started_at=self.start)
         # 검증문 `self.assertEqual(Path(info['frame_csv']).name, 'session0_cali.csv')`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-        self.assertEqual(Path(info['frame_csv']).name, 'session0_cali.csv')
+        self.assertEqual(Path(info['frame_csv']).name, f"R00_S01_Set00_Calibration_Camera_{info['sensor_file_id']}.csv")
         # `self.manager.finish_session([])`을 호출하여 해당 단계의 작업을 수행합니다.
         self.manager.finish_session([])
         # `info` 값에 `self.manager.begin_session('biceps_curl', 'TEST', started_at=self.start)` 호출 결과를 저장합니다. 대상: `info`.
         info = self.manager.begin_session('biceps_curl', 'TEST', started_at=self.start)
         # 검증문 `self.assertEqual(Path(info['frame_csv']).name, 'session1_round1_set1.csv')`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-        self.assertEqual(Path(info['frame_csv']).name, 'session1_round1_set1.csv')
+        self.assertEqual(Path(info['frame_csv']).name, f"R01_S01_Set01_Play_Camera_{info['sensor_file_id']}.csv")
 
     # 회귀 테스트: `test_date_uses_korea_timezone` 시나리오의 조건을 구성하고 아래 단언문으로 기대 동작을 확인합니다.
     def test_date_uses_korea_timezone(self):
@@ -365,7 +367,7 @@ class SessionLogTests(unittest.TestCase):
         # `info` 값에 `self.manager.begin_session('biceps_curl', 'MAIN', started_at=start_utc)` 호출 결과를 저장합니다. 대상: `info`.
         info = self.manager.begin_session('biceps_curl', 'MAIN', started_at=start_utc)
         # 검증문 `self.assertEqual(Path(info['directory']).parent.name, '260101')`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-        self.assertEqual(Path(info['directory']).parent.name, '260101')
+        self.assertEqual(Path(info['directory']).parents[1].name, '2026-01-01')
 
     # 회귀 테스트: `test_legacy_profile_is_read_without_moving_or_overwriting_it` 시나리오의 조건을 구성하고 아래 단언문으로 기대 동작을 확인합니다.
     def test_legacy_profile_is_read_without_moving_or_overwriting_it(self):
@@ -399,7 +401,7 @@ class SessionLogTests(unittest.TestCase):
         # `patch.dict(os.environ, {'LOCALAPPDATA': str(self.root)}, clear=True)`의 컨텍스트 안에서 처리하여 파일·잠금·연결·테스트 패치의 진입과 정리가 짝을 이루게 합니다.
         with patch.dict(os.environ, {'LOCALAPPDATA': str(self.root)}, clear=True):
             # 검증문 `self.assertEqual(default_log_root(), Path(__file__).resolve().parent.parent / 'data')`으로 실제 결과가 기대 조건과 일치하는지 확인합니다. 다르면 테스트가 실패합니다.
-            self.assertEqual(default_log_root(), Path(__file__).resolve().parent.parent / 'data')
+            self.assertEqual(default_log_root(), Path(__file__).resolve().parent.parent / 'PatientData')
 
     # 회귀 테스트: `test_invalid_ids_indices_and_metadata_are_rejected` 시나리오의 조건을 구성하고 아래 단언문으로 기대 동작을 확인합니다.
     def test_invalid_ids_indices_and_metadata_are_rejected(self):
