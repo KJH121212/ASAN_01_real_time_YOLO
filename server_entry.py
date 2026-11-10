@@ -1,10 +1,7 @@
 """Windows exe 및 Python 실행에서 공통으로 사용하는 소켓 서버 진입점입니다."""
 
-# 서버 이벤트 루프를 실행합니다.
 import asyncio
-# exe에서 자식 프로세스가 진입점을 다시 실행하지 않도록 준비합니다.
 import multiprocessing
-# 진단 메시지를 표준 오류로 출력합니다.
 import sys
 
 
@@ -12,6 +9,9 @@ import sys
 def main():
     # PyInstaller의 프로세스 생성 호환 처리를 AI 라이브러리 가져오기 전에 수행합니다.
     multiprocessing.freeze_support()
+    # 로컬/GoPro 트래픽이 시스템 프록시를 타지 않도록 NO_PROXY를 먼저 구성합니다.
+    from network.camera import configure_local_and_gopro_no_proxy
+    configure_local_and_gopro_no_proxy()
     # 실제 서버 구현을 재사용하여 Python·exe의 측정 동작을 동일하게 유지합니다.
     from network.socket_server import ExerciseSocketServer
     # 기본 주소는 로컬 PC의 ws://127.0.0.1:8080입니다.
