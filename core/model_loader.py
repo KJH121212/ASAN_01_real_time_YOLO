@@ -1,10 +1,11 @@
-"""Load AI dependencies/weights once without delaying the listening socket."""
+"""서버 포트 개방을 늦추지 않기 위해 AI 모델(YOLO/RTMPose)을 백그라운드에서 한 번만 불러오는 로더."""
 
 import asyncio
 import threading
 import time
 import traceback
 
+# 클라이언트 상태 표시용 단계별 한글 안내 문구
 PHASE_MESSAGES = {
     'NOT_STARTED': '모델 준비 대기 중입니다.',
     'IMPORTING': 'AI 라이브러리를 불러오는 중입니다.',
@@ -16,6 +17,8 @@ PHASE_MESSAGES = {
 }
 
 class BackgroundModelLoader:
+    """AI 모델 로딩 상태와 단계별 소요 시간을 스레드 안전하게 관리한다."""
+
     def __init__(self, factory):
         self.factory = factory
         self.engine = None
@@ -30,6 +33,7 @@ class BackgroundModelLoader:
         self._timings = {}
 
     def start(self):
+        """백그라운드 모델 로딩 태스크를 한 번만 시작한다."""
         if self.task is None:
             with self._lock:
                 self._started = time.perf_counter()
@@ -39,6 +43,7 @@ class BackgroundModelLoader:
         return self.task
 
     def report_phase(self, phase):
+        """현재 로딩 단계 전환 시각을 기록하고 콘솔에 출력한다."""
         now = time.perf_counter()
         with self._lock:
             if phase == self._phase:
@@ -50,6 +55,7 @@ class BackgroundModelLoader:
         print(f'[STARTUP] {phase}: {PHASE_MESSAGES.get(phase, phase)}', flush=True)
 
     async def _load(self):
+        """별도 스레드에서 모델 팩토리를 실행해 완료/실패 상태를 갱신한다."""
         try:
             engine = await asyncio.to_thread(self.factory, self.report_phase)
             if engine is None:
@@ -69,6 +75,7 @@ class BackgroundModelLoader:
             traceback.print_exc()
 
     def snapshot(self):
+        """클라이언트에 보낼 현재 모델 준비 상태(SERVER_STATUS) 딕셔너리를 만든다."""
         with self._lock:
             timings = dict(self._timings)
             elapsed = self._elapsed

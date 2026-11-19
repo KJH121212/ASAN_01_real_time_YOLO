@@ -245,7 +245,7 @@ class SessionController:
 
         self.normalizer = PoseNormalizer(conf_threshold=0.35, invert_y=True)
         self.calibration_detectors = {}
-        # Optional MAIN coordinate range learned during another calibration metric.
+        # 본 측정(main_eval_config)에서 RAW_COORDINATE(비정규화 Y좌표)를 사용하는 운동을 위해 캘리브레이션 중 비정규화 좌표 범위를 함께 수집합니다.
         self.calibration_coordinates = {
             side: dict(samples=deque(), baseline=None, peaks=[])
             for side in ('left', 'right')
@@ -306,9 +306,8 @@ class SessionController:
         required = []
         for side in ('left', 'right'):
             ids = set(cfg.get('primary_kpts', {}).get(side, []))
-            for field in ('target_kpt', 'reference_kpt'):
-                if cfg.get(field, {}).get(side) is not None:
-                    ids.add(cfg[field][side])
+            if cfg.get('target_kpt', {}).get(side) is not None:
+                ids.add(cfg['target_kpt'][side])
             if self.motion_engine.use_normalization:
                 ids.update((5, 6, 11, 12))
             required.append(ids)
@@ -316,16 +315,20 @@ class SessionController:
             return not any(ids and all(visible(j) for j in ids) for ids in required)
         return not points or not all(visible(j) for ids in required for j in ids)
 
-    # 양쪽 관절 측정값으로 안정 자세·상승·복귀를 추적하고 최근 세 동작의 일관성과 완료 상태를 갱신합니다.
+    # 본 측정(main_eval_config)이 RAW_COORDINATE(비정규화 Y좌표)일 때, 정규화 캘리브레이션 진행과 동시에 원본 비정규화 Y좌표의 기준선과 피크를 수집합니다.
     def _collect_main_coordinate(self, side, keypoints, detector, now):
         cfg = self.motion_engine.config.get('main_eval_config', {})
-        if not cfg or cfg.get('metric_type') != 'COORDINATE':
+        if not cfg or cfg.get('metric_type') not in ('RAW_COORDINATE', 'COORDINATE'):
             return
-        if cfg.get('use_normalization', True) or cfg.get('reference_kpt'):
-            raise ValueError('Calibration output requires an unnormalized target coordinate')
+        if cfg.get('use_normalization', False if cfg.get('metric_type') == 'RAW_COORDINATE' else True):
+            raise ValueError('Calibration output requires an unnormalized target coordinate (RAW_COORDINATE)')
+        tgt_id = cfg.get('target_kpt', {}).get(side)
+        if tgt_id is None:
+            pk = cfg.get('primary_kpts', {}).get(side, [])
+            tgt_id = pk[0] if isinstance(pk, list) and len(pk) == 1 else None
         points = {p['id']: p for p in keypoints or []
                   if self._in_frame(p) and p.get('score', 0.) >= .35}
-        point = points.get(cfg['target_kpt'][side])
+        point = points.get(tgt_id)
         value = point[cfg.get('axis', 'y')] if point else None
         record = self.calibration_coordinates[side]
         if not detector.ready:
@@ -335,7 +338,7 @@ class SessionController:
                 record['samples'].clear()
                 return
             record['samples'].append((now, value))
-            while record['samples'] and now-record['samples'][0][0] > detector.rest_seconds:
+            while record['samples'] and now - record['samples'][0][0] > detector.rest_seconds:
                 record['samples'].popleft()
         elif record['baseline'] is None and value is not None:
             samples = [v for _, v in record['samples']] + [value]
@@ -343,9 +346,10 @@ class SessionController:
         if detector.started is not None and value is not None:
             if len(record['peaks']) < len(detector.peaks):
                 record['peaks'].append(value)
-            select = min if cfg.get('motion_direction') == 'DECREASING' else max
+            select = min if cfg.get('motion_direction', 'DECREASING') == 'DECREASING' else max
             record['peaks'][-1] = select(record['peaks'][-1], value)
 
+    # 양쪽 관절 측정값으로 안정 자세·상승·복귀를 추적하고 최근 세 동작의 일관성과 완료 상태를 갱신합니다.
     def process_calibration_frame(self, keypoints, is_occluded, now=None):
         now = time.time() if now is None else now
         detectors = self.calibration_detectors
@@ -434,25 +438,31 @@ class SessionController:
                     raise ValueError('Calibration needs three coordinate ranges')
                 start = record['baseline']
                 peak = float(np.median(record['peaks'][-3:]))
-                target = start + fraction * (peak-start)
-                sign = -1 if main_cfg['motion_direction'] == 'DECREASING' else 1
-                if not math.isfinite(target) or sign*(target-start) <= 0:
+                target = start + fraction * (peak - start)
+                main_dir = main_cfg.get('motion_direction', 'DECREASING')
+                sign = -1 if main_dir == 'DECREASING' else 1
+                if not math.isfinite(target) or sign * (target - start) <= 0:
                     raise ValueError('Coordinate range does not match the MAIN direction; recalibrate')
+                tgt_id = main_cfg.get('target_kpt', {}).get(side)
+                if tgt_id is None:
+                    pk = main_cfg.get('primary_kpts', {}).get(side, [])
+                    tgt_id = pk[0] if isinstance(pk, list) and len(pk) == 1 else None
                 converted[side] = dict(
                     start_val=round(start, 6), target_val=round(target, 6),
-                    metric_type='COORDINATE', motion_direction=main_cfg['motion_direction'],
-                    use_normalization=False, target_kpt=main_cfg['target_kpt'][side],
+                    metric_type=main_cfg.get('metric_type', 'RAW_COORDINATE'),
+                    motion_direction=main_dir,
+                    use_normalization=False, target_kpt=tgt_id,
                     axis=main_cfg.get('axis', 'y'), counting_method=main_cfg.get('counting_method', 'PEAK_REVERSAL'),
                     calibration_peak_val=peak, calibration_target_fraction=fraction,
-                    calibration_length_thresholds=thresholds[side])
+                    calibration_normalized_thresholds=thresholds[side])
             thresholds = converted
         for side, values in thresholds.items():
-            values['use_normalization'] = engine.use_normalization
+            values.setdefault('use_normalization', engine.use_normalization)
             if engine.coordinate_unit == 'pixel':
                 if engine.frame_size is None:
                     raise ValueError('Pixel calibration requires image dimensions')
                 values.update(coordinate_unit='pixel', axis=cfg.get('axis', 'y'),
-                    target_kpt=cfg['target_kpt'][side], reference_kpt=cfg.get('reference_kpt', {}).get(side),
+                    target_kpt=cfg['target_kpt'][side],
                     frame_size=list(engine.frame_size), counting_method=engine.counting_method)
         if self.data_manager:
             self.data_manager.session_log.info['measurement'] = engine.count_threshold_status()

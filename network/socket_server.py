@@ -236,9 +236,12 @@ class ExerciseSocketServer:
                 else:
                     raise ValueError('이 날짜·동작·라운드의 캘리브레이션 결과가 없습니다. 같은 라운드에서 캘리브레이션을 먼저 완료하세요.')
             if custom_thresholds and not is_video:
-                if any(custom_thresholds.get(side, {}).get('metric_type') != exercise_config['eval_config']['metric_type']
-                       for side in ('left', 'right') if side in custom_thresholds):
-                    raise ValueError('캘리브레이션 이후 측정 방식이 바뀌었습니다. 같은 라운드에서 캘리브레이션을 다시 완료하세요.')
+                expected_m = exercise_config['eval_config']['metric_type']
+                for side in ('left', 'right'):
+                    if side in custom_thresholds:
+                        saved_m = custom_thresholds[side].get('metric_type')
+                        if saved_m != expected_m and not ({saved_m, expected_m} <= {'COORDINATE', 'RAW_COORDINATE'} and not custom_thresholds[side].get('use_normalization', True)):
+                            raise ValueError('캘리브레이션 이후 측정 방식이 바뀌었습니다. 같은 라운드에서 캘리브레이션을 다시 완료하세요.')
         if custom_thresholds and "left" not in custom_thresholds and "start_val" in custom_thresholds:
             custom_thresholds = {"left": custom_thresholds, "right": custom_thresholds}
 

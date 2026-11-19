@@ -12,8 +12,9 @@ from core.motion_engine import QUALITY_THRESHOLDS
 CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs/exercise_kpt_config_coco.json'
 LABELS = {
     'ANGLE': ('관절 각도', '각도 (°)', '설정된 세 관절의 각도 변화를 봅니다.'),
-    'COORDINATE': ('관절 위치', '정규화 좌표 (무차원)', '골반 중심을 원점으로 하고 몸통 길이를 1로 맞춘 좌표 또는 두 관절의 좌표 차이입니다. 실제 길이 단위가 아닙니다.'),
-    'LENGTH': ('관절 사이 거리', '정규화 거리 (무차원)', '몸통 길이를 1로 맞춘 좌표에서 계산한 두 관절 사이 거리입니다. cm나 m 단위가 아닙니다.'),
+    'COORDINATE': ('정규화 관절 위치', '정규화 Y좌표 (무차원)', '골반 중심을 원점으로 하고 몸통 길이를 1로 맞춘 대상 관절의 Y좌표 위치입니다.'),
+    'RAW_COORDINATE': ('비정규화 관절 위치', '영상 높이 대비 Y좌표 (0~1)', '몸통 정규화를 적용하지 않은 원본 영상 비율(0~1) 기준 대상 관절의 Y좌표 위치입니다. 위쪽이 0이고 아래쪽이 1입니다.'),
+    'LENGTH': ('관절 사이 길이', '정규화 길이 (무차원)', '몸통 길이를 1로 맞춘 좌표에서 계산한 두 관절 사이 유클리드 길이입니다. cm나 m 단위가 아닙니다.'),
 }
 
 
@@ -42,15 +43,14 @@ def context(table, log=None):
     recorded = stored.get('measurement', {})
     if recorded:
         evaluation = dict(recorded)
-    for key in ('axis', 'target_kpt', 'primary_kpts', 'reference_kpt', 'coordinate_unit'):
+    for key in ('axis', 'target_kpt', 'primary_kpts', 'coordinate_unit'):
         if key in recorded:
             evaluation[key] = recorded[key]
     if 'movement_direction' in recorded:
         evaluation['motion_direction'] = recorded['movement_direction']
     by_side = {}
     for side in ('left', 'right'):
-        fields = (('primary_kpts',) if metric in ('ANGLE', 'LENGTH') else
-                  ('target_kpt', 'reference_kpt'))
+        fields = (('primary_kpts',) if metric in ('ANGLE', 'LENGTH') else ('target_kpt', 'primary_kpts'))
         ids = []
         for field in fields:
             value = evaluation.get(field, {}).get(side, [])
@@ -58,22 +58,23 @@ def context(table, log=None):
         by_side[side] = sorted({j for j in ids if type(j) is int and 0 <= j < 17})
     joints = sorted(set(by_side['left'] + by_side['right'])) or [11, 12, 13, 14, 15, 16]
     label, unit, description = LABELS.get(metric, ('저장된 측정값', '로그 값', '저장된 수치 그대로 표시합니다.'))
-    normalized = recorded.get('use_normalization', evaluation.get('use_normalization', True))
+    default_norm = False if metric == 'RAW_COORDINATE' else True
+    normalized = recorded.get('use_normalization', evaluation.get('use_normalization', default_norm))
     if 'use_normalization' in table and table.use_normalization.notna().any():
         normalized = str(table.use_normalization.dropna().iloc[0]).lower() == 'true'
     counting_method = recorded.get('count_on', 'RETURN')
     if 'counting_method' in table and table.counting_method.notna().any():
         counting_method = str(table.counting_method.dropna().iloc[0])
     if not normalized and metric in ('COORDINATE', 'LENGTH'):
-        unit = '영상 높이 대비 좌표' if metric == 'COORDINATE' else '영상 높이 대비 거리'
+        unit = '영상 높이 대비 Y좌표' if metric == 'COORDINATE' else '영상 높이 대비 길이'
         description = '몸통 정규화를 적용하지 않은 영상 좌표입니다. 위가 Y=0이며 아래쪽으로 증가합니다. 가로·세로 축은 영상 높이 기준으로 맞춥니다.'
     coordinate_unit = recorded.get('coordinate_unit', 'image' if recorded else evaluation.get('coordinate_unit', 'image'))
     if 'metric_unit' in table and table.metric_unit.notna().any():
         coordinate_unit = 'pixel' if str(table.metric_unit.dropna().iloc[0]) == 'px' else 'image'
     if coordinate_unit == 'pixel' and metric == 'COORDINATE':
-        unit = '좌표 차이 (px)' if evaluation.get('reference_kpt') else '관절 위치 (px)'
-        label = '관절 좌표 차이' if evaluation.get('reference_kpt') else '관절 위치'
-        description = '몸통 정규화 없이 원본 영상 픽셀 좌표로 계산합니다. 기준 관절이 있으면 대상 좌표에서 기준 좌표를 뺍니다. 촬영 거리가 달라지면 재캘리브레이션이 필요합니다.'
+        unit = '관절 위치 (px)'
+        label = '관절 위치'
+        description = '몸통 정규화 없이 원본 영상 픽셀 Y좌표로 계산합니다. 촬영 거리가 달라지면 재캘리브레이션이 필요합니다.'
     evaluation['coordinate_unit'] = coordinate_unit
     evaluation['use_normalization'] = normalized
     versions = pd.to_numeric(table.get('threshold_version', pd.Series(0, index=table.index)), errors='coerce').ffill().fillna(0)

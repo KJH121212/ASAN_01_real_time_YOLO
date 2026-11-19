@@ -1,4 +1,4 @@
-"""Shared overlay for live previews and recorded log videos."""
+"""실시간 미리보기와 녹화 영상 분석에서 공통으로 쓰는 관절·진행률 오버레이 그리기 모듈."""
 
 import math
 import cv2
@@ -6,11 +6,13 @@ from utils.measurement_progress import measurement_progress
 from utils.quality_display import QUALITY_COLORS, quality_result
 from core.motion_engine import QUALITY_THRESHOLDS
 
+# 상체·하체 관절을 선으로 잇기 위한 COCO 키포인트 쌍
 COCO_EDGES = ((5, 6), (5, 7), (7, 9), (6, 8), (8, 10), (5, 11), (6, 12),
               (11, 12), (11, 13), (13, 15), (12, 14), (14, 16))
 
 
 def motion_progress(pose, side):
+    """한쪽(left/right) 측정값과 기준값을 이용해 진행 막대용 0~1 비율을 계산한다."""
     data = pose.get(side, {})
     if pose.get('is_occluded') or data.get('val') is None:
         return None
@@ -22,11 +24,12 @@ def motion_progress(pose, side):
     target = pose.get('thresholds', {}).get(side, {}).get('target_val')
     if start is not None and target is not None:
         return measurement_progress(data['val'], metric, start, target)
-    # Older packets without metric metadata may only carry a display ratio.
+    # 기준 정보가 없는 이전 형식 패킷은 서버가 보낸 progress_ratio를 그대로 사용한다
     return measurement_progress(data.get('progress_ratio'), 'COORDINATE', 0., 1.)
 
 
 def render_overlay(frame, keypoints, pose, exercise_name, elapsed_sec):
+    """영상 프레임 위에 스켈레톤 선과 오른쪽 정보 패널(횟수·품질·진행률 바)을 그린다."""
     image = frame.copy()
     height, width = image.shape[:2]
     unit = min(width / 640, height / 360)

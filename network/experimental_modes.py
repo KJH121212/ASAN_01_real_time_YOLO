@@ -18,7 +18,7 @@ PREVIEW_JPEG_QUALITY = 60
 
 
 def encode_preview(frame, keypoints, pose, exercise_name, elapsed_sec):
-    """Resize a separate preview before drawing; the captured frame stays full size."""
+    """저장용 원본 크기는 유지한 채 미리보기 전용 축소 프레임에 오버레이를 그려 JPEG로 인코딩한다."""
     height, width = frame.shape[:2]
     scale = min(PREVIEW_SIZE[0] / width, PREVIEW_SIZE[1] / height, 1.)
     if scale < 1:
@@ -37,7 +37,7 @@ def encode_preview(frame, keypoints, pose, exercise_name, elapsed_sec):
 
 
 async def send_preview(server, websocket, frame, keypoints, pose, elapsed_sec):
-    """Send small previews at most 10 FPS, independently of recording resolution."""
+    """녹화 해상도와 무관하게 최대 10 FPS 주기로 작은 미리보기 이미지를 전송한다."""
     if server.output_mode != 'VISUAL':
         return
     now = time.perf_counter()
@@ -74,6 +74,7 @@ async def _poll_video_stop(server, websocket):
 
 
 async def analyze_video(server, websocket, data: dict):
+    """녹화된 영상 파일을 배치로 추론해 관절 좌표·측정값을 NPZ와 요약 로그로 저장한다."""
     video_path = data.get("video_path") or data.get("input_source")
     exercise_name = data.get("exercise_name", "biceps_curl")
     mode = data.get("mode", "CALIBRATION")

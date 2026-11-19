@@ -110,7 +110,7 @@ class DataManager:
 
     def begin_session(self, exercise_name, mode, session=None, round_number=1, set_number=1,
                       record_video=False, video_fps=30.0, started_at=None, target_score=None,
-                      play_session_id=None, exercise_record_id=None, slot=1):
+                      play_session_id=None, exercise_record_id=None, slot=1, filename_stem=None):
         if self.session_log is not None and self.session_log._summary is None:
             raise RuntimeError("Finish the active log before starting another")
         self._save_metadata()
@@ -118,7 +118,7 @@ class DataManager:
                                       round_number, set_number, record_video, video_fps, started_at, target_score,
                                       play_session_id=play_session_id, exercise_record_id=exercise_record_id,
                                       slot=slot, patient_id=self.player_id, data_version=self.data_version,
-                                      registration=self.registration)
+                                      registration=self.registration, filename_stem=filename_stem)
         self.buf_timestamps = self.session_log.timestamps
         self.buf_values = self.session_log.values
         self.buf_raw_keypoints = self.session_log.keypoints

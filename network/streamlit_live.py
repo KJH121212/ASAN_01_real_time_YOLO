@@ -1,10 +1,11 @@
-"""Measurement result cards for the Streamlit control screen."""
+"""Streamlit 제어 화면에 왼쪽/오른쪽 측정 결과 카드를 그리는 모듈."""
 
 import streamlit as st
 from utils.quality_display import QUALITY_COLORS, QUALITY_LABELS, quality_result
 
 
 def measurement_values(state):
+    """현재 포즈 상태를 받아 좌우 횟수·각도/좌표·품질 배지를 화면에 표시한다."""
     pose = state['pose']
     for column, side, label in zip(st.columns(2), ('left', 'right'), ('왼쪽', '오른쪽')):
         data = pose.get(side, {})

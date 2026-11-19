@@ -1,9 +1,7 @@
-"""Instant interactive client-side Skeleton Motion Player with Synchronized Joint Graph.
+"""브라우저 HTML5 Canvas에서 관절 애니메이션과 시계열 그래프를 함께 재생하는 모듈.
 
-Renders pure skeleton animation on HTML5 Canvas directly in the browser
-synchronized with a real-time interactive time-series curve below it.
-Features face-hiding, trajectory smoothing (One-Euro / rolling Gaussian),
-and instant click-to-pose scrubbing.
+스켈레톤 움직임과 아래쪽 관절 그래프를 동기화하며,
+얼굴 숨김, 좌표 스무딩(흔들림 완화), 그래프 클릭 시 해당 프레임 이동을 지원한다.
 """
 
 import json
@@ -17,15 +15,7 @@ from analysis.log_reader import coordinates
 
 
 def smooth_keypoints(points: np.ndarray, window: int = 5, max_gap: int = 3) -> np.ndarray:
-    """Smooth keypoint coordinates over time while interpolating brief dropouts.
-
-    Args:
-        points: (N, 17, 3) array where [:, :, :2] are x, y and [:, :, 2] is confidence.
-        window: Rolling window size (odd integer, e.g. 3, 5, 7).
-        max_gap: Maximum missing frames to linearly interpolate.
-    Returns:
-        smoothed_points: (N, 17, 3) array.
-    """
+    """짧게 끊긴 관절 좌표를 선형 보간으로 메우고 이동 평균으로 흔들림을 줄인다."""
     if len(points) == 0:
         return points
 
@@ -35,9 +25,9 @@ def smooth_keypoints(points: np.ndarray, window: int = 5, max_gap: int = 3) -> n
     for j in range(17):
         for ax in (0, 1):
             s = pd.Series(points[:, j, ax])
-            # 1) Linearly fill small drops (up to max_gap frames)
+            # 1) max_gap 프레임 이하의 짧은 누락 구간을 직선 보간으로 채운다
             s_interp = s.interpolate(method='linear', limit=max_gap)
-            # 2) Centered rolling mean to eliminate jitter
+            # 2) 앞뒤 window 크기 이동 평균으로 떨림을 부드럽게 만든다
             s_smooth = s_interp.rolling(window=window, min_periods=1, center=True).mean()
             smoothed[:, j, ax] = s_smooth.to_numpy()
 
@@ -58,7 +48,7 @@ def build_skeleton_player_html(
     chart_series: Optional[List[Dict]] = None,
     chart_title: str = "선택 관절 시계열 그래프 (클릭하여 스켈레톤 확인)",
 ) -> str:
-    """Generate self-contained HTML5 Canvas player + synchronized joint time-series chart."""
+    """브라우저에서 바로 실행되는 HTML5 Canvas 스켈레톤·차트 플레이어 HTML을 만든다."""
     total_frames = len(points_nx17x3)
     if total_frames == 0:
         return "<div style='color:white;padding:20px;'>프레임 데이터가 없습니다.</div>"
@@ -753,11 +743,11 @@ def render_skeleton_player_component(
     chart_title: str = "선택 관절 시계열 그래프 (클릭 시 스켈레톤 동기화)",
     height: int = 770,
 ):
-    """Embed the interactive HTML5 canvas skeleton player + synchronized chart into Streamlit."""
+    """로그에서 좌표를 꺼내 필요 시 스무딩한 뒤 Streamlit 화면에 플레이어를 표시한다."""
     mode = "신체 정규화" if is_norm else "영상 비율"
     pts = coordinates(log, mode=mode, confidence=confidence)
 
-    # Apply smoothing if requested
+    # 스무딩 옵션이 켜져 있으면 좌표 흔들림을 보정한다
     if apply_smoothing:
         pts = smooth_keypoints(pts, window=smooth_window)
 

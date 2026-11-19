@@ -1,76 +1,50 @@
-"""Streamlit 로그 및 영상 분석 탭 (전면 개편 버전)."""
+"""Streamlit 로그 및 영상 분석 탭 (컴팩트 버전: 카운트 시뮬레이션 · 실전 캘리브레이션/본측정 · 스켈레톤 모션 · 그래프 · 오버레이 영상)."""
 
-from pathlib import Path
-from zipfile import BadZipFile
 from datetime import date
 import json
+from pathlib import Path
+from zipfile import BadZipFile
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
-import altair as alt
 
 from analysis.log_reader import JOINTS, coordinates, count_events, measurements, read_csv, read_npz, summary
-from analysis.metrics import context, diagnostics, repetition_stats, state_segments, threshold_guides, quality_guides
+from analysis.metrics import context, diagnostics, quality_guides, repetition_stats, state_segments, threshold_guides
 from analysis.skeleton_player import render_skeleton_player_component, smooth_keypoints
-from analysis.skeleton_viewer import draw_skeleton_frame, render_skeleton_video
-from core.motion_engine import SideFSM
-from utils.quality_display import QUALITY_COLORS, QUALITY_LABELS, quality_result
+from analysis.video_ui import video_panel
+from core.data_manager import DataManager, load_exercise_config
+from core.motion_engine import MotionEngine, SideFSM, config_for_mode
+from core.session_controller import CalibrationCycleDetector, SessionController
+from utils.filters import OneEuroKeypointFilter
+from utils.quality_display import QUALITY_COLORS
 
 ROOT = Path(__file__).resolve().parent.parent
 
 JOINT_DISPLAY_MAP = {
-    'nose': '코 (nose)',
-    'left_eye': '왼쪽 눈 (left_eye)',
-    'right_eye': '오른쪽 눈 (right_eye)',
-    'left_ear': '왼쪽 귀 (left_ear)',
-    'right_ear': '오른쪽 귀 (right_ear)',
-    'left_shoulder': '왼쪽 어깨 (left_shoulder)',
-    'right_shoulder': '오른쪽 어깨 (right_shoulder)',
-    'left_elbow': '왼쪽 팔꿈치 (left_elbow)',
-    'right_elbow': '오른쪽 팔꿈치 (right_elbow)',
-    'left_wrist': '왼쪽 손목 (left_wrist)',
-    'right_wrist': '오른쪽 손목 (right_wrist)',
-    'left_hip': '왼쪽 골반 (left_hip)',
-    'right_hip': '오른쪽 골반 (right_hip)',
-    'left_knee': '왼쪽 무릎 (left_knee)',
-    'right_knee': '오른쪽 무릎 (right_knee)',
-    'left_ankle': '왼쪽 발목 (left_ankle)',
-    'right_ankle': '오른쪽 발목 (right_ankle)',
+    'nose': '코 (0)',
+    'left_eye': '왼눈 (1)', 'right_eye': '오른눈 (2)',
+    'left_ear': '왼귀 (3)', 'right_ear': '오른귀 (4)',
+    'left_shoulder': '왼어깨 (5)', 'right_shoulder': '오른어깨 (6)',
+    'left_elbow': '왼팔꿈치 (7)', 'right_elbow': '오른팔꿈치 (8)',
+    'left_wrist': '왼손목 (9)', 'right_wrist': '오른손목 (10)',
+    'left_hip': '왼골반 (11)', 'right_hip': '오른골반 (12)',
+    'left_knee': '왼무릎 (13)', 'right_knee': '오른무릎 (14)',
+    'left_ankle': '왼발목 (15)', 'right_ankle': '오른발목 (16)',
 }
 
-STATE_HELP = {
-    'BASELINE': '휴식 기준 위치·길이를 수집하는 중입니다.',
-    'DOWN': '다음 움직임을 기다리며 저점을 추적합니다.',
-    'READY': '다음 움직임을 시작할 수 있는 대기 상태입니다.',
-    'RISING': '움직임의 크기 또는 유지 시간을 확인하는 중입니다.',
-    'UP': '활성 조건을 충족했습니다. 반전 방식은 피크에서의 하강을, 과거 방식은 복귀를 기다립니다.',
-    'PUSHING': '움직임의 피크와 방향 전환을 추적합니다.',
-    'RETURNING': '휴식·시작 기준으로 돌아오기를 기다립니다. 이때의 상승은 새 반복으로 인정되지 않을 수 있습니다.',
-    'WAITING': '설정된 목표에 도달해 카운트를 대기합니다.',
-    'MISSING': '필요한 관절 추적이 끊긴 상태입니다.',
-    'FALLING': '하강을 확인했습니다. 다음 상승을 위한 저점을 추적합니다.',
+SYMMETRIC_JOINT_PAIRS = {
+    'ankle': {'label': '발목 (Ankle · L:15 / R:16)', 'left': 15, 'right': 16},
+    'knee': {'label': '무릎 (Knee · L:13 / R:14)', 'left': 13, 'right': 14},
+    'hip': {'label': '동측 골반 (Hip · L:11 / R:12)', 'left': 11, 'right': 12},
+    'opp_hip': {'label': '반대측 골반 (Opposite Hip · L:12 / R:11)', 'left': 12, 'right': 11},
+    'wrist': {'label': '손목 (Wrist · L:9 / R:10)', 'left': 9, 'right': 10},
+    'elbow': {'label': '팔꿈치 (Elbow · L:7 / R:8)', 'left': 7, 'right': 8},
+    'shoulder': {'label': '동측 어깨 (Shoulder · L:5 / R:6)', 'left': 5, 'right': 6},
+    'opp_shoulder': {'label': '반대측 어깨 (Opposite Shoulder · L:6 / R:5)', 'left': 6, 'right': 5},
+    'nose': {'label': '코 (Nose · 0)', 'left': 0, 'right': 0},
 }
-DIAGNOSTIC_HELP = {
-    '유효 측정 (%)': '선택 구간의 기록 중 측정값이 비어 있지 않은 비율입니다. 판정 정확도를 뜻하지 않습니다.',
-    '최솟값': '선택 구간에서 관측된 가장 작은 측정값입니다.',
-    '최댓값': '선택 구간에서 관측된 가장 큰 측정값입니다.',
-    '변화 폭': '최댓값 - 최솟값입니다. 신체의 실제 가동 각도와 동일한 뜻은 아닙니다.',
-    '주요 상태': '선택 구간에서 가장 자주 기록된 판정 상태입니다.',
-    '표준편차': '선택 구간에서 측정값이 얼마나 퍼져 있는지 나타냅니다.',
-    '5백분위': '유효한 값의 약 5%가 이 값 이하입니다. 극단값을 제외한 범위를 보는 데 사용합니다.',
-    '95백분위': '유효한 값의 약 95%가 이 값 이하입니다.',
-    '기준 대기 (%)': 'BASELINE 상태로 기록된 프레임 비율입니다.',
-    '기준 확보 (%)': '0보다 큰 기준 길이가 저장된 프레임 비율입니다.',
-    '활성 연속 유지 (초)': '저장된 측정값이 활성 기준 이상인 가장 긴 연속 구간입니다. 긴 기록 간격과 기준 변경에서 끊습니다.',
-    '기준 초과 중 복귀대기 (%)': '활성 기준을 넘은 기록 중 RETURNING 상태인 비율입니다.',
-}
-
-
-def panel_help(title, short, detail):
-    st.caption(short)
-    with st.expander(f'{title} 읽는 법'):
-        st.markdown(detail)
 
 
 @st.cache_data(show_spinner=False)
@@ -83,130 +57,131 @@ def convert_coordinates(log, mode, confidence):
     return coordinates(log, mode, confidence)
 
 
-def plot_timeseries(graph, events, title, guides=None, show_points=False):
-    """Measurements and threshold categories have independent, explicit colors."""
+def plot_timeseries(graph, events, title, guides=None, show_points=False, height=300):
+    """시계열 측정값·관절 좌표 및 기준선·카운트 마커를 렌더링합니다."""
     time_column = graph.index.name
     values = graph.reset_index().melt(id_vars=time_column, var_name='series', value_name='value')
     color = alt.Color('series:N', title='항목')
     if set(graph.columns).issubset({'left_value', 'right_value'}):
         color = alt.Color('series:N', title='측정값', scale=alt.Scale(
             domain=['left_value', 'right_value'], range=['#2563eb', '#dc2626']))
-    line = alt.Chart(values).mark_line(strokeWidth=2.2,
-        point=alt.OverlayMarkDef(size=14, opacity=.65) if show_points else False).encode(
+    line = alt.Chart(values).mark_line(
+        strokeWidth=2.0,
+        point=alt.OverlayMarkDef(size=12, opacity=.6) if show_points else False,
+    ).encode(
         x=alt.X(f'{time_column}:Q', title='시간 (초)' if time_column == 'time_sec' else '행 번호'),
-        y=alt.Y('value:Q', title=title, scale=alt.Scale(zero=False)), color=color,
-        tooltip=[alt.Tooltip(f'{time_column}:Q', format='.3f'), 'series:N', alt.Tooltip('value:Q', format='.4f')])
+        y=alt.Y('value:Q', title=title, scale=alt.Scale(zero=False)),
+        color=color,
+        tooltip=[alt.Tooltip(f'{time_column}:Q', format='.3f'), 'series:N', alt.Tooltip('value:Q', format='.4f')],
+    )
     layers = [line]
     if guides is not None and not guides.empty:
         extra = guides.reset_index().melt(id_vars=time_column, var_name='series', value_name='value')
-        categories = {'quality_PERFECT': ('Perfect · 70%', QUALITY_COLORS['PERFECT']),
-                      'quality_GOOD': ('Good · 50%', QUALITY_COLORS['GOOD']),
-                      'quality_BAD': ('Normal · 35%', QUALITY_COLORS['BAD']),
-                      'start_val': ('시작 기준', '#64748b'), 'target_val': ('목표 기준', '#111827')}
-        extra['kind'] = extra.series.map(lambda name: next((label for suffix, (label, _) in categories.items() if name.endswith(suffix)), '기준선'))
-        present = [(label, color) for label, color in categories.values() if label in set(extra.kind)]
-        layers.append(alt.Chart(extra).mark_line(interpolate='step-after', strokeWidth=1.8, opacity=.85).encode(
-            x=f'{time_column}:Q', y=alt.Y('value:Q', scale=alt.Scale(zero=False)), detail='series:N',
-            color=alt.Color('kind:N', title='기준선', scale=alt.Scale(
-                domain=[label for label, _ in present], range=[color for _, color in present]),
-                legend=alt.Legend(orient='bottom', symbolStrokeWidth=3)),
-            tooltip=['kind:N', 'series:N', alt.Tooltip('value:Q', format='.4f')]))
-    if not events.empty:
+        categories = {
+            'quality_PERFECT': ('Perfect (70%)', QUALITY_COLORS['PERFECT']),
+            'quality_GOOD': ('Good (50%)', QUALITY_COLORS['GOOD']),
+            'quality_BAD': ('Normal (35%)', QUALITY_COLORS['BAD']),
+            'start_val': ('시작 기준', '#64748b'),
+            'target_val': ('목표 기준', '#111827'),
+        }
+        extra['kind'] = extra.series.map(
+            lambda name: next((lbl for sfx, (lbl, _) in categories.items() if name.endswith(sfx)), '기준선')
+        )
+        present = [(lbl, clr) for lbl, clr in categories.values() if lbl in set(extra.kind)]
+        layers.append(alt.Chart(extra).mark_line(interpolate='step-after', strokeWidth=1.6, opacity=.85).encode(
+            x=f'{time_column}:Q',
+            y=alt.Y('value:Q', scale=alt.Scale(zero=False)),
+            detail='series:N',
+            color=alt.Color(
+                'kind:N', title='기준선',
+                scale=alt.Scale(domain=[lbl for lbl, _ in present], range=[clr for _, clr in present]),
+                legend=alt.Legend(orient='bottom', symbolStrokeWidth=3),
+            ),
+            tooltip=['kind:N', 'series:N', alt.Tooltip('value:Q', format='.4f')],
+        ))
+    if events is not None and not events.empty:
         layers.append(alt.Chart(events).mark_rule(strokeDash=[5, 3], opacity=.75).encode(
             x=f'{time_column}:Q',
             color=alt.Color('side:N', legend=None, scale=alt.Scale(domain=['left', 'right'], range=['#2563eb', '#dc2626'])),
-            tooltip=[alt.Tooltip(f'{time_column}:Q', title='카운트 시간', format='.3f'),
-                     'side:N', 'rep_count:Q', 'frame_idx:Q']))
+            tooltip=[alt.Tooltip(f'{time_column}:Q', title='카운트 시간', format='.3f'), 'side:N', 'rep_count:Q'],
+        ))
     chart = alt.layer(*layers).resolve_scale(color='independent')
-    st.altair_chart(chart.properties(height=320).interactive(), width='stretch')
+    st.altair_chart(chart.properties(height=height).interactive(), width='stretch')
 
 
-def input_sources():
-    method = st.radio('로그 입력', ['경로 선택', '파일 업로드'], horizontal=True, key='log_method')
-    if method == '파일 업로드':
-        uploaded = st.file_uploader('CSV·NPZ 파일', type=['csv', 'npz'], accept_multiple_files=True,
-                                   help='같은 이름의 CSV·NPZ를 함께 올리면 하나의 로그로 표시합니다.')
-        sources = {file.name: file.getvalue() for file in uploaded}
-        if len(sources) != len(uploaded):
-            st.error('같은 이름의 파일이 여러 개입니다. 로그를 나눠서 올리거나 파일명을 구분해 주세요.')
-            return {}
-    else:
-        with st.form('log_path_form'):
-            value = st.text_input('폴더 또는 파일 경로', value=str(ROOT / 'data'),
-                                 key='log_path',
-                                 help='Streamlit이 실행 중인 PC의 경로입니다. 하위 폴더도 검색합니다.')
-            submitted = st.form_submit_button('경로 열기', key='log_open')
-        if submitted:
-            path = Path(value.strip().strip('"')).expanduser()
-            if not path.is_absolute():
-                path = ROOT / path
-            if path.is_file() and path.suffix.lower() in ('.csv', '.npz'):
-                files = sorted({path, *(p for suffix in ('.csv', '.npz') if (p := path.with_suffix(suffix)).is_file())})
-            elif path.is_dir():
-                files = sorted(p for p in path.rglob('*') if p.suffix.lower() in ('.csv', '.npz') and p.is_file())
-            else:
-                st.error('CSV·NPZ 파일 또는 존재하는 폴더를 입력하세요.')
-                files = []
-            st.session_state['log_paths'] = [str(p.resolve()) for p in files]
-        sources = {name: None for name in st.session_state.get('log_paths', [])}
-    return sources
-
-
-def log_filters(groups):
-    """Independent filters: empty selections mean all available logs."""
-    identities = {}
-    for source in groups:
-        parts = Path(source).parts
-        identity = dict(patient='미지정', date='미지정', exercise='미지정')
-        if len(parts) >= 4:
-            try:
-                date.fromisoformat(parts[-3])
-            except ValueError:
-                pass
-            else:
-                identity = dict(patient=parts[-4], date=parts[-3], exercise=parts[-2])
-        identities[source] = identity
-    config = ROOT / 'configs/exercise_kpt_config_coco.json'
-    exercises = json.loads(config.read_text(encoding='utf-8'))['exercises'] if config.exists() else {}
-    keys = ('patient', 'date', 'exercise')
-
-    def reset():
-        for key in keys:
-            st.session_state[f'log_filter_{key}'] = []
-
-    st.caption('각 필터는 독립적으로 여러 값을 선택할 수 있습니다. 비워 두면 전체입니다. 서로 다른 필터는 모두 만족하는 로그를 표시합니다.')
-    selected = {}
-    for column, key, label in zip(st.columns(3), keys, ('환자 필터', '날짜 필터', '동작 필터')):
-        options = sorted({item[key] for item in identities.values()}, reverse=key == 'date')
-        state_key = f'log_filter_{key}'
-        if state_key in st.session_state:
-            st.session_state[state_key] = [value for value in st.session_state[state_key] if value in options]
-        selected[key] = column.multiselect(label, options, key=state_key,
-            format_func=(lambda value: exercises.get(value, {}).get('display_name_kr', value)) if key == 'exercise' else str,
-            placeholder='전체')
-    st.button('필터 초기화', on_click=reset)
-    filtered = {source: files for source, files in groups.items()
-                if all(not selected[key] or identities[source][key] in selected[key] for key in keys)}
-    st.caption(f'전체 {len(groups):,}개 로그 · 필터 결과 {len(filtered):,}개 (같은 이름의 CSV·NPZ는 1개 로그)')
-    return filtered
-
-
+# ==============================================================================
+# COMPACT FILE & FILTER BAR
+# ==============================================================================
 def select_files():
-    with st.expander('로그 열기 · 변경', expanded=not st.session_state.get('analysis_loaded', False)):
-        st.caption('폴더는 하위 로그를 검색하고, 파일은 같은 이름의 CSV·NPZ를 함께 읽습니다. 다른 PC의 파일은 업로드를 사용하세요.')
-        sources = input_sources()
-    if not sources:
-        st.info('분석할 경로를 열거나 CSV·NPZ 파일을 업로드하세요.')
-        return {}, ''
-    groups = {}
-    for name in sources:
-        groups.setdefault(str(Path(name).with_suffix('')), []).append(name)
-    groups = log_filters(groups)
+    with st.expander('로그 폴더 열기 / 필터 설정', expanded=not st.session_state.get('analysis_loaded', False)):
+        c_mode, c_path, c_btn = st.columns([1.0, 2.8, 0.7])
+        method = c_mode.radio('입력 방식', ['경로 선택', '파일 업로드'], horizontal=True, key='log_method', label_visibility='collapsed')
+        if method == '파일 업로드':
+            uploaded = st.file_uploader('CSV/NPZ 파일 업로드', type=['csv', 'npz'], accept_multiple_files=True)
+            sources = {f.name: f.getvalue() for f in uploaded}
+        else:
+            value = c_path.text_input('폴더/파일 경로', value=str(ROOT / 'data'), key='log_path', label_visibility='collapsed')
+            if c_btn.button('경로 열기', key='log_open', use_container_width=True) or not st.session_state.get('log_paths'):
+                path = Path(value.strip().strip('"')).expanduser()
+                if not path.is_absolute():
+                    path = ROOT / path
+                if path.is_file() and path.suffix.lower() in ('.csv', '.npz'):
+                    files = sorted({path, *(p for sfx in ('.csv', '.npz') if (p := path.with_suffix(sfx)).is_file())})
+                elif path.is_dir():
+                    files = sorted(p for p in path.rglob('*') if p.suffix.lower() in ('.csv', '.npz') and p.is_file())
+                else:
+                    files = []
+                st.session_state['log_paths'] = [str(p.resolve()) for p in files]
+            sources = {name: None for name in st.session_state.get('log_paths', [])}
+
+        if not sources:
+            st.info('분석할 경로를 열거나 CSV/NPZ 파일을 업로드하세요.')
+            return {}, ''
+
+        groups = {}
+        for name in sources:
+            groups.setdefault(str(Path(name).with_suffix('')), []).append(name)
+
+        identities = {}
+        for src in groups:
+            parts = Path(src).parts
+            ident = dict(patient='미지정', date='미지정', exercise='미지정')
+            if len(parts) >= 4:
+                try:
+                    date.fromisoformat(parts[-3])
+                    ident = dict(patient=parts[-4], date=parts[-3], exercise=parts[-2])
+                except ValueError:
+                    pass
+            identities[src] = ident
+
+        config_p = ROOT / 'configs/exercise_kpt_config_coco.json'
+        exercises = json.loads(config_p.read_text(encoding='utf-8'))['exercises'] if config_p.exists() else {}
+        keys = ('patient', 'date', 'exercise')
+        selected_filters = {}
+        for col, k, lbl in zip(st.columns(3), keys, ('환자 필터', '날짜 필터', '동작 필터')):
+            opts = sorted({item[k] for item in identities.values()}, reverse=(k == 'date'))
+            s_key = f'log_filter_{k}'
+            if s_key in st.session_state:
+                st.session_state[s_key] = [v for v in st.session_state[s_key] if v in opts]
+            selected_filters[k] = col.multiselect(
+                lbl, opts, key=s_key, placeholder='전체',
+                format_func=(lambda v: exercises.get(v, {}).get('display_name_kr', v)) if k == 'exercise' else str,
+            )
+        groups = {
+            src: fls for src, fls in groups.items()
+            if all(not selected_filters[k] or identities[src][k] in selected_filters[k] for k in keys)
+        }
+
     if not groups:
-        st.info('조건에 맞는 로그가 없습니다. 필터를 변경하거나 초기화하세요.')
+        st.info('조건에 맞는 로그가 없습니다.')
         return {}, ''
-    selected = st.selectbox('분석할 로그', list(groups), key='selected_log',
-                           format_func=lambda value: ' / '.join(Path(value).parts[-4:]))
+
+    selected = st.selectbox(
+        f'분석할 로그 ({len(groups):,}개)',
+        list(groups),
+        key='selected_log',
+        format_func=lambda v: ' / '.join(Path(v).parts[-4:]),
+    )
     result = {}
     for name in groups[selected]:
         try:
@@ -218,695 +193,700 @@ def select_files():
     return result, selected
 
 
-def overview(table, events, visible_events, ctx, time_column, sides, show_thresholds, show_quality=False):
-    value_columns = [f'{side}_value' for side in sides if f'{side}_value' in table]
-    if value_columns:
-        graph = table.set_index(time_column)[value_columns] * ctx['factor']
-        guides = None
-        if show_thresholds:
-            guides = threshold_guides(table, ctx, time_column, sides)
-        if show_quality:
-            grades = quality_guides(table, ctx, time_column, sides)
-            guides = pd.concat([guides, grades], axis=1) if guides is not None else grades
-        graph_sides = [side for side in sides if f'{side}_value' in graph]
-        if guides is not None and not guides.empty and len(graph_sides) > 1:
-            for panel, side in zip(st.columns(len(graph_sides)), graph_sides):
-                with panel:
-                    st.write('왼쪽' if side == 'left' else '오른쪽')
-                    plot_timeseries(graph[[f'{side}_value']], visible_events.loc[visible_events.side == side],
-                                    ctx['unit'], guides[[name for name in guides if name.startswith(side+'_')]])
-        else:
-            plot_timeseries(graph, visible_events, ctx['unit'], guides)
-        if show_quality and ctx['counting_method'] != 'TARGET_POSITION':
-            st.caption('품질 기준: 시작→목표 범위의 Perfect 70% · Good 50% · Normal 35%. 카운트 조건과는 별개입니다.')
-        st.caption('threshold 출처: ' + ctx['threshold_source'])
+# ==============================================================================
+# TAB 1: 카운트 시뮬레이션
+# ==============================================================================
+def _describe_eval_config(eval_cfg: dict) -> str:
+    mtype = eval_cfg.get('metric_type', 'COORDINATE')
+    default_norm = False if mtype == 'RAW_COORDINATE' else True
+    use_norm = eval_cfg.get('use_normalization', default_norm)
+    norm_txt = 'Norm(골반=0,몸통=1,위=+Y)' if use_norm else 'Raw(영상비율 0~1,아래=+Y)'
+    direction = eval_cfg.get('motion_direction', 'DECREASING' if mtype == 'RAW_COORDINATE' else 'INCREASING')
+
+    if mtype in ('COORDINATE', 'RAW_COORDINATE'):
+        axis = eval_cfg.get('axis', 'y').upper()
+        tgt = eval_cfg.get('target_kpt', {})
+        t_id = tgt.get('left')
+        if t_id is None:
+            pk = eval_cfg.get('primary_kpts', {}).get('left', [])
+            t_id = pk[0] if isinstance(pk, list) and len(pk) == 1 else None
+        t_l = JOINTS[t_id] if isinstance(t_id, int) and 0 <= t_id < len(JOINTS) else str(t_id)
+        formula = f'{axis}좌표 위치 ({t_l})'
+    elif mtype == 'ANGLE':
+        pk = eval_cfg.get('primary_kpts', {}).get('left', [])
+        names = '-'.join(JOINTS[i] for i in pk if isinstance(i, int) and 0 <= i < len(JOINTS))
+        formula = f'3점 각도 ({names}°)'
     else:
-        st.info('측정값 열이 없습니다. 관절 좌표 그래프에서 상세 좌표를 확인하세요.')
+        pk = eval_cfg.get('primary_kpts', {}).get('left', [])
+        names = '-'.join(JOINTS[i] for i in pk if isinstance(i, int) and 0 <= i < len(JOINTS))
+        formula = f'2점 길이 ({names})'
 
-    with st.expander('측정 방식 · 핵심 관절'):
-        st.write(ctx['description'])
-        st.caption(f'{ctx["settings_source"]} · 핵심 관절: ' + ', '.join(JOINTS[j] for j in ctx['joints']))
-        st.json(ctx['evaluation'])
-
-
-def score_overview(events, ctx, info):
-    if info.get('mode') == 'CALIBRATION' or ctx.get('counting_method') == 'TARGET_POSITION':
-        return
-    if events.empty or 'quality' not in events:
-        return
-    grades = events.quality.astype(str).str.upper().replace({'NORMAL': 'BAD'})
-    if not grades.isin(QUALITY_COLORS).any():
-        return
-    for column, grade in zip(st.columns(3), QUALITY_COLORS):
-        result = quality_result(dict(quality=grade))
-        count = int(grades.eq(grade).sum())
-        column.markdown(f"<div style='border-top:4px solid {result['color']};padding:8px'>"
-                        f"<strong style='color:{result['color']};font-size:20px'>{result['label']}</strong>"
-                        f"<br><b>{count}회 · +{count*result['points']:g}점</b>"
-                        f"<br>score 코드 {result['code']} · 1회당 +{result['points']:g}점</div>",
-                        unsafe_allow_html=True)
+    return f"**{mtype}** · {formula} · `{norm_txt}` · `{direction}`"
 
 
-def tracking(table, log, ctx, time_column, bounds, sides):
-    st.write('**추적 및 판정 상태**')
-    segments = state_segments(table, time_column)
-    if not segments.empty:
-        segments = segments.loc[segments.side.isin(sides)]
-        chart = alt.Chart(segments).mark_bar().encode(
-            x=alt.X('start:Q', title='시간 (초)' if time_column == 'time_sec' else '행 번호'), x2='end:Q',
-            y=alt.Y('side:N', title=None), color=alt.Color('state:N', title='상태'),
-            tooltip=['side:N', 'state:N', alt.Tooltip('start:Q', format='.3f'), alt.Tooltip('end:Q', format='.3f')])
-        st.altair_chart(chart.properties(height=90), width='stretch')
-    report = diagnostics(table, ctx, time_column)
-    if not report.empty:
-        labels = ['왼쪽' if side == 'left' else '오른쪽' for side in sides]
-        report = report.loc[report.side.isin(labels)].copy()
-        report[['minimum', 'maximum', 'span', 'std', 'p05', 'p95']] *= ctx['factor']
-        report = report.rename(columns={'side': '좌우', 'valid_pct': '유효 측정 (%)', 'minimum': '최솟값',
-            'maximum': '최댓값', 'span': '변화 폭', 'std': '표준편차', 'main_state': '주요 상태'})
-        compact = [name for name in ('좌우', '유효 측정 (%)', '최솟값', '최댓값', '변화 폭', '주요 상태') if name in report]
-        st.dataframe(report[compact].round(3), hide_index=True)
+def _compute_dynamic_simulation_table(log, base_table, sim_config, sim_mode, apply_smoothing=False, smooth_window=5):
+    df = base_table.copy().reset_index(drop=True)
+    if not log or 'keypoints' not in log:
+        df['left_posture_ok'] = True
+        df['right_posture_ok'] = True
+        return df
+
+    kpts = log['keypoints'].astype(float).copy()
+    if apply_smoothing and smooth_window > 1:
+        kpts = smooth_keypoints(kpts, window=smooth_window)
+
+    aspects = log.get('image_aspect_ratio')
+    frame_sizes = log.get('frame_sizes')
+
+    engine = MotionEngine(config=sim_config, mode=sim_mode)
+    engine.exercise_name = sim_config.get('exercise_name', 'custom')
+    controller = SessionController(motion_engine=engine)
+
+    n_frames = min(len(df), len(kpts))
+    left_vals = np.full(len(df), np.nan, dtype=float)
+    right_vals = np.full(len(df), np.nan, dtype=float)
+    left_posture = np.ones(len(df), dtype=bool)
+    right_posture = np.ones(len(df), dtype=bool)
+
+    for idx in range(n_frames):
+        mat = kpts[idx]
+        aspect = float(aspects[idx]) if (aspects is not None and idx < len(aspects) and np.isfinite(aspects[idx]) and aspects[idx] > 0) else 1.0
+        w_px, h_px = (int(frame_sizes[idx][0]), int(frame_sizes[idx][1])) if (frame_sizes is not None and idx < len(frame_sizes) and np.all(np.isfinite(frame_sizes[idx]))) else (1280, 720)
+
+        raw_list = [
+            {'id': j, 'x': float(mat[j, 0]), 'y': float(mat[j, 1]), 'score': float(mat[j, 2]) if np.isfinite(mat[j, 2]) else 0.0,
+             'image_aspect_ratio': aspect, 'image_width': w_px, 'image_height': h_px}
+            for j in range(min(17, len(mat))) if np.isfinite(mat[j, 0]) and np.isfinite(mat[j, 1])
+        ]
+        if not raw_list:
+            left_posture[idx] = right_posture[idx] = False
+            continue
+        measured = controller.measurement_points(raw_list)
+        if not measured:
+            left_posture[idx] = right_posture[idx] = False
+            continue
+        pts_map = {p['id']: p for p in measured}
+        vl = engine._compute_side_value('left', pts_map)
+        vr = engine._compute_side_value('right', pts_map)
+        left_vals[idx] = np.nan if vl is None else float(vl)
+        right_vals[idx] = np.nan if vr is None else float(vr)
+        left_posture[idx] = bool(engine.count_posture_valid('left', pts_map))
+        right_posture[idx] = bool(engine.count_posture_valid('right', pts_map))
+
+    df['left_value'] = left_vals
+    df['right_value'] = right_vals
+    df['left_posture_ok'] = left_posture
+    df['right_posture_ok'] = right_posture
+    return df
 
 
-def calibration_details(info, table):
-    reference = info.get('calibration', {})
-    if reference:
-        label = '생성한' if info.get('mode') == 'CALIBRATION' else '사용한'
-        st.caption(f"{label} 캘리브레이션: {reference['file']} · v{int(reference['version']):02d} · {reference['created_at']}")
-        with st.expander('캘리브레이션 기준 · 출처'):
-            st.code(reference.get('path', reference['file']), language=None)
-            st.json(reference.get('thresholds', {}))
-        return
-    fields = ['calibration_file', 'calibration_version', 'calibration_created_at']
-    if all(name in table for name in fields):
-        records = table[fields].dropna(subset=['calibration_file']).drop_duplicates()
-        records = records.loc[records.calibration_file.astype(str).str.strip().ne('')]
-        if not records.empty:
-            st.caption('사용한 캘리브레이션: ' + ' · '.join(records.calibration_file.astype(str)))
-            with st.expander('캘리브레이션 기준 · 출처'):
-                st.dataframe(records, hide_index=True)
-            return
-    st.caption('캘리브레이션 연결 정보가 없는 로그입니다.')
+def _estimate_smart_thresholds(series: pd.Series, motion_dir: str, target_fraction: float = 0.85):
+    valid = series.dropna().to_numpy(dtype=float)
+    valid = valid[np.isfinite(valid)]
+    if len(valid) < 5:
+        return (0.0, 1.0, 0.85) if motion_dir == 'INCREASING' else (1.0, 0.0, 0.15)
+    base = float(np.percentile(valid, 10 if motion_dir == 'INCREASING' else 90))
+    peak = float(np.percentile(valid, 95 if motion_dir == 'INCREASING' else 5))
+    target = base + target_fraction * (peak - base)
+    return round(base, 4), round(peak, 4), round(target, 4)
 
 
-# ==============================================================================
-# TAB 1: 📊 신호 및 관절 좌표 그래프
-# ==============================================================================
-def render_graph_tab(filtered, table, log, ctx, time_column, bounds, sides, markers, show_thresholds, show_quality, source_id):
-    st.subheader('📊 시계열 신호 및 관절 좌표 분석')
-    st.caption('측정값(Left/Right Value), 17개 COCO 관절 좌표, 또는 두 관절 간 상대 변위(Delta)를 선택하여 정규화(Norm) 여부와 함께 분석합니다.')
+def render_count_tab(table, log, ctx, time_column, source_id=''):
+    config_path = ROOT / 'configs/exercise_kpt_config_coco.json'
+    exercises_cfg = json.loads(config_path.read_text(encoding='utf-8'))['exercises'] if config_path.exists() else {}
+    ex_keys = list(exercises_cfg.keys())
+    detected_ex = ctx.get('exercise') if ctx.get('exercise') in ex_keys else 'knee_extension'
+    has_npz_kpts = bool(log and 'keypoints' in log)
+    joint_keys = list(SYMMETRIC_JOINT_PAIRS.keys())
 
-    data_type = st.radio(
-        '그래프 데이터 종류 선택',
-        ['운동 측정 신호 (Left / Right Value)', '개별 관절 좌표 (COCO 17 Joints)', '관절 간 상대 변위 및 길이 (Relative Delta)'],
-        horizontal=True,
-        key='graph_main_data_type'
-    )
-
-    if data_type == '운동 측정 신호 (Left / Right Value)':
-        score_overview(markers, ctx, summary(log) if log is not None else {})
-        overview(filtered, markers, markers, ctx, time_column, sides, show_thresholds, show_quality)
-        with st.expander(f'카운트 기록 · 선택 구간 {len(markers)}건'):
-            if len(markers):
-                st.dataframe(markers, hide_index=True)
-                stats = repetition_stats(table, markers, time_column)
-                if not stats.empty:
-                    stats = stats.loc[stats[time_column].between(*bounds) & stats.side.isin(sides)].copy()
-                    stats[['minimum', 'maximum', 'span']] *= ctx['factor']
-                    st.dataframe(stats, hide_index=True)
-                    st.download_button('반복 통계 CSV', stats.to_csv(index=False).encode('utf-8-sig'), 'repetition_stats.csv', 'text/csv')
-                st.download_button('카운트 시점 CSV', markers.to_csv(index=False).encode('utf-8-sig'), 'count_events.csv', 'text/csv')
-            else:
-                st.caption('선택한 구간에 카운트 기록이 없습니다.')
-        tracking(filtered, log, ctx, time_column, bounds, sides)
-
-    elif data_type == '개별 관절 좌표 (COCO 17 Joints)':
-        if log is None or 'keypoints' not in log:
-            st.info('개별 관절 좌표를 확인하려면 NPZ 로그가 필요합니다.')
-            return
-
-        c1, c2, c3 = st.columns([1.5, 1.2, 1.3])
-        norm_mode = c1.selectbox(
-            '좌표 정규화 모드',
-            ['신체 정규화', '영상 비율', '픽셀'],
-            index=0,
-            help='신체 정규화(Norm): 골반 중심(0,0), 몸통길이=1.0, 위쪽=+Y (신체/거리 불변)\n영상 비율: 0~1 비율\n픽셀: 원본 영상 픽셀 (px)'
+    with st.container(border=True):
+        c_ex, c_preset, c_post, c_sm = st.columns([1.3, 1.8, 0.9, 0.9])
+        if 'sim_global_ex' not in st.session_state:
+            st.session_state['sim_global_ex'] = detected_ex if detected_ex in ex_keys else ex_keys[0]
+        sel_ex = c_ex.selectbox(
+            '운동 동작',
+            ex_keys,
+            format_func=lambda k: f"{exercises_cfg[k].get('display_name_kr', k)}",
+            key='sim_global_ex',
         )
-        axis_choice = c2.selectbox('좌표 축 선택', ['Y축 (수직)', 'X축 (수평)', '둘 다 (X & Y)', '신뢰도 (Confidence)'], index=0)
-        confidence = c3.slider('관절 최소 신뢰도', 0.0, 1.0, 0.35, 0.05, key='joint_plot_conf')
-
-        default_joints = [JOINTS[j] for j in ctx.get('joints', []) if any(JOINTS[j].startswith(s) for s in sides)]
-        if not default_joints:
-            default_joints = [JOINTS[j] for j in ctx.get('joints', [])]
-        if not default_joints:
-            default_joints = ['right_knee', 'right_ankle']
-
-        selected_joints = st.multiselect(
-            '표시할 관절 선택',
-            JOINTS,
-            default=default_joints,
-            format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j),
-            key='joint_plot_select'
-        )
-
-        if not selected_joints:
-            st.warning('표시할 관절을 1개 이상 선택해 주세요.')
-            return
-
-        try:
-            points = convert_coordinates(log, norm_mode, confidence)
-            times = log['timestamps']
-            mask = (times >= bounds[0]) & (times <= bounds[1])
-
-            axis_map = {'X축 (수평)': [0], 'Y축 (수직)': [1], '둘 다 (X & Y)': [0, 1], '신뢰도 (Confidence)': [2]}
-            target_axes = axis_map[axis_choice]
-            axis_labels = {0: 'X', 1: 'Y', 2: 'Conf'}
-
-            graph_dict = {}
-            for j_name in selected_joints:
-                idx = JOINTS.index(j_name)
-                for ax in target_axes:
-                    lbl = f'{j_name}_{axis_labels[ax]}'
-                    graph_dict[lbl] = points[mask, idx, ax]
-
-            graph_df = pd.DataFrame(graph_dict, index=times[mask])
-            graph_df.index.name = time_column
-
-            valid_count = int(graph_df.notna().any(axis=1).sum())
-            total_count = len(graph_df)
-            st.caption(f'📊 유효 좌표 시점: {valid_count:,} / {total_count:,} 프레임 | 모드: {norm_mode} | 축: {axis_choice}')
-
-            if valid_count > 0:
-                plot_timeseries(graph_df, markers, f'{axis_choice} ({norm_mode})', show_points=True)
-                with st.expander('선택 관절 좌표 요약 통계'):
-                    stats_df = graph_df.describe().T[['count', 'mean', 'std', 'min', '50%', 'max']]
-                    stats_df['span'] = stats_df['max'] - stats_df['min']
-                    st.dataframe(stats_df.round(4))
-                st.download_button(
-                    '선택 관절 좌표 시계열 CSV 다운로드',
-                    graph_df.reset_index().to_csv(index=False).encode('utf-8-sig'),
-                    'joint_coordinates.csv',
-                    'text/csv'
-                )
-            else:
-                st.warning('선택한 조건에서 유효한 관절 좌표가 없습니다. 신뢰도 임계값이나 확인 구간을 확인하세요.')
-        except Exception as exc:
-            st.error(f'관절 좌표 변환 실패: {exc}')
-
-    elif data_type == '관절 간 상대 변위 및 길이 (Relative Delta)':
-        if log is None or 'keypoints' not in log:
-            st.info('관절 좌표를 확인하려면 NPZ 로그가 필요합니다.')
-            return
-
-        c1, c2, c3, c4 = st.columns(4)
-        norm_mode = c1.selectbox('좌표 모드', ['신체 정규화', '영상 비율', '픽셀'], index=0, key='delta_norm_mode')
-        ref_default = JOINTS.index('right_knee') if 'right_knee' in JOINTS else 14
-        tgt_default = JOINTS.index('right_ankle') if 'right_ankle' in JOINTS else 16
-        ref_joint = c2.selectbox('기준 관절 (Reference)', JOINTS, index=ref_default, format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j), key='delta_ref')
-        tgt_joint = c3.selectbox('대상 관절 (Target)', JOINTS, index=tgt_default, format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j), key='delta_tgt')
-        metric_choice = c4.selectbox(
-            '계산 변위/거리',
-            ['Y축 상대 변위 (Target Y - Ref Y)', 'X축 상대 변위 (Target X - Ref X)', '유클리디안 2D 거리 (Distance)'],
-            index=0,
-            key='delta_metric'
-        )
-        confidence = st.slider('관절 최소 신뢰도', 0.0, 1.0, 0.35, 0.05, key='delta_conf')
-
-        try:
-            points = convert_coordinates(log, norm_mode, confidence)
-            times = log['timestamps']
-            mask = (times >= bounds[0]) & (times <= bounds[1])
-
-            ref_idx = JOINTS.index(ref_joint)
-            tgt_idx = JOINTS.index(tgt_joint)
-
-            ref_pts = points[mask, ref_idx, :2]
-            tgt_pts = points[mask, tgt_idx, :2]
-
-            col_label = f'{tgt_joint} - {ref_joint}'
-            if metric_choice.startswith('Y축'):
-                series_vals = tgt_pts[:, 1] - ref_pts[:, 1]
-                val_unit = f'ΔY ({norm_mode})'
-            elif metric_choice.startswith('X축'):
-                series_vals = tgt_pts[:, 0] - ref_pts[:, 0]
-                val_unit = f'ΔX ({norm_mode})'
-            else:
-                series_vals = np.sqrt(np.sum((tgt_pts - ref_pts) ** 2, axis=1))
-                val_unit = f'거리 2D ({norm_mode})'
-
-            delta_df = pd.DataFrame({col_label: series_vals}, index=times[mask])
-            delta_df.index.name = time_column
-
-            valid_count = int(delta_df.notna().sum().iloc[0])
-            st.caption(f'📐 계산 대상: {col_label} ({metric_choice}) | 모드: {norm_mode} | 유효 시점: {valid_count:,}개')
-
-            if valid_count > 0:
-                plot_timeseries(delta_df, markers, val_unit, show_points=True)
-                with st.expander('상대 변위 요약 통계'):
-                    stats_df = delta_df.describe().T[['count', 'mean', 'std', 'min', '50%', 'max']]
-                    stats_df['span'] = stats_df['max'] - stats_df['min']
-                    st.dataframe(stats_df.round(4))
-                st.download_button(
-                    '상대 변위 CSV 다운로드',
-                    delta_df.reset_index().to_csv(index=False).encode('utf-8-sig'),
-                    'relative_delta.csv',
-                    'text/csv'
-                )
-            else:
-                st.warning('선택한 두 관절 모두가 검출된 유효 시점이 없습니다.')
-        except Exception as exc:
-            st.error(f'상대 변위 계산 실패: {exc}')
-
-
-# ==============================================================================
-# TAB 2: 🦴 스켈레톤 단독 모션 (검은 배경)
-# ==============================================================================
-def render_skeleton_motion_tab(log, source_id):
-    st.subheader('🦴 스켈레톤 단독 모션 뷰어 (검은 배경)')
-    st.caption('별도의 비디오/GIF 생성 대기 없이, 브라우저에서 실시간으로 즉시 재생되는 스켈레톤 애니메이션입니다. 재생/일시정지, 속도 조절, 탐색 슬라이더를 바로 이용할 수 있습니다.')
-
-    if log is None or 'keypoints' not in log:
-        st.warning('스켈레톤 모션을 렌더링하려면 관절 좌표가 포함된 NPZ 파일이 필요합니다.')
-        return
-
-    kpts = log['keypoints']
-    total_frames = len(kpts)
-    times = log.get('timestamps', np.arange(total_frames) / 30.0)
-
-    c1, c2, c3, c4 = st.columns([1.3, 1.1, 1.2, 1.0])
-    norm_choice = c1.radio(
-        '스켈레톤 정규화 모드',
-        ['신체 정규화 (Norm)', '원본 영상 좌표 (Unnorm)'],
-        horizontal=True,
-        key=f'skel_norm_{source_id}'
-    )
-    is_norm = (norm_choice == '신체 정규화 (Norm)')
-    confidence = c2.slider('관절 최소 신뢰도', 0.0, 1.0, 0.35, 0.05, key=f'skel_conf_{source_id}')
-    hide_face = c3.checkbox('얼굴 관절 숨김 (눈·코·귀)', value=True, key=f'skel_hide_face_{source_id}', help='얼굴 5개 관절(코, 눈, 귀)을 숨기고 어깨/몸통/팔/다리 골격만 표시합니다.')
-    apply_smoothing = c4.checkbox('평활화 (Smoothing)', value=True, key=f'skel_smooth_{source_id}', help='고주파 지터와 일시적 가림을 보정하여 부드러운 궤적으로 만듭니다.')
-
-    smooth_window = 5
-    compare_raw = False
-    if apply_smoothing:
-        s_col1, s_col2 = st.columns([1.5, 2.5])
-        smooth_window = s_col1.select_slider('평활화 강도 (Window Size)', options=[3, 5, 7, 9, 11], value=5, key=f'skel_win_{source_id}')
-        compare_raw = s_col2.checkbox('하단 그래프에 원본(Raw) 곡선 함께 비교 표시 (점선)', value=True, key=f'skel_comp_raw_{source_id}')
-
-    # 하단 연동 시계열 그래프 설정
-    st.write('**📈 하단 연동 시계열 그래프 관절 선택** (그래프를 클릭/드래그하면 해당 시점의 스켈레톤으로 즉시 이동합니다)')
-    col_g1, col_g2, col_g3 = st.columns([1.5, 1.3, 1.2])
-    chart_preset = col_g1.selectbox(
-        '그래프 분석 항목',
-        [
-            '무릎 신전 핵심 (발목 Y + 무릎 Y)',
-            '무릎-발목 상대변위 (ΔY: 무릎 대비 발목 높이)',
-            '사용자 관절 직접 선택 (Custom Joints)',
-        ],
-        key=f'skel_chart_preset_{source_id}'
-    )
-
-    raw_pts = coordinates(log, mode='신체 정규화' if is_norm else '영상 비율', confidence=confidence)
-    pts = smooth_keypoints(raw_pts, window=smooth_window) if apply_smoothing else raw_pts
-
-    chart_series = []
-    chart_title = chart_preset + (" (평활화 적용)" if apply_smoothing else " (원본 Raw)")
-
-    if chart_preset == '무릎 신전 핵심 (발목 Y + 무릎 Y)':
-        colors = {'right_ankle': '#38bdf8', 'right_knee': '#fb923c', 'left_ankle': '#facc15', 'left_knee': '#10b981'}
-        target_side = col_g2.radio('표시할 다리', ['오른쪽', '왼쪽', '양쪽'], horizontal=True, key=f'skel_chart_side_{source_id}')
-        sides_to_plot = ['right'] if target_side == '오른쪽' else (['left'] if target_side == '왼쪽' else ['right', 'left'])
-
-        for s in sides_to_plot:
-            side_kr = '오른쪽' if s == 'right' else '왼쪽'
-            ank_idx = JOINTS.index(f'{s}_ankle')
-            knee_idx = JOINTS.index(f'{s}_knee')
-
-            chart_series.append({
-                'name': f'{side_kr} 발목 Y',
-                'color': colors[f'{s}_ankle'],
-                'values': pts[:, ank_idx, 1].tolist(),
-                'dashed': False
-            })
-            if apply_smoothing and compare_raw:
-                chart_series.append({
-                    'name': f'{side_kr} 발목 Y (Raw)',
-                    'color': '#64748b',
-                    'values': raw_pts[:, ank_idx, 1].tolist(),
-                    'dashed': True
-                })
-
-            chart_series.append({
-                'name': f'{side_kr} 무릎 Y',
-                'color': colors[f'{s}_knee'],
-                'values': pts[:, knee_idx, 1].tolist(),
-                'dashed': False
-            })
-
-    elif chart_preset == '무릎-발목 상대변위 (ΔY: 무릎 대비 발목 높이)':
-        target_side = col_g2.radio('표시할 다리', ['오른쪽', '왼쪽', '양쪽'], horizontal=True, key=f'skel_delta_side_{source_id}')
-        sides_to_plot = ['right'] if target_side == '오른쪽' else (['left'] if target_side == '왼쪽' else ['right', 'left'])
-
-        for s in sides_to_plot:
-            side_kr = '오른쪽' if s == 'right' else '왼쪽'
-            ank_idx = JOINTS.index(f'{s}_ankle')
-            knee_idx = JOINTS.index(f'{s}_knee')
-
-            delta_vals = pts[:, ank_idx, 1] - pts[:, knee_idx, 1]
-            color = '#38bdf8' if s == 'right' else '#facc15'
-            chart_series.append({
-                'name': f'{side_kr} 발목-무릎 ΔY',
-                'color': color,
-                'values': delta_vals.tolist(),
-                'dashed': False
-            })
-            if apply_smoothing and compare_raw:
-                raw_delta = raw_pts[:, ank_idx, 1] - raw_pts[:, knee_idx, 1]
-                chart_series.append({
-                    'name': f'{side_kr} ΔY (Raw)',
-                    'color': '#64748b',
-                    'values': raw_delta.tolist(),
-                    'dashed': True
-                })
-
-    else:
-        default_custom = ['right_ankle', 'right_knee']
-        selected_custom = col_g2.multiselect(
-            '표시할 관절',
-            JOINTS,
-            default=default_custom,
-            format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j),
-            key=f'skel_custom_joints_{source_id}'
-        )
-        axis_choice = col_g3.selectbox('좌표 축', ['Y축 (수직)', 'X축 (수평)', '신뢰도 (Confidence)'], index=0, key=f'skel_custom_axis_{source_id}')
-        axis_idx = {'Y축 (수직)': 1, 'X축 (수평)': 0, '신뢰도 (Confidence)': 2}[axis_choice]
-        axis_label = {'Y축 (수직)': 'Y', 'X축 (수평)': 'X', '신뢰도 (Confidence)': 'Conf'}[axis_choice]
-
-        palette = ['#38bdf8', '#fb923c', '#10b981', '#facc15', '#a855f7', '#ec4899', '#94a3b8']
-        for i, j_name in enumerate(selected_custom):
-            j_idx = JOINTS.index(j_name)
-            chart_series.append({
-                'name': f'{JOINT_DISPLAY_MAP.get(j_name, j_name).split()[0]} {axis_label}',
-                'color': palette[i % len(palette)],
-                'values': pts[:, j_idx, axis_idx].tolist(),
-                'dashed': False
-            })
-            if apply_smoothing and compare_raw:
-                chart_series.append({
-                    'name': f'{JOINT_DISPLAY_MAP.get(j_name, j_name).split()[0]} (Raw)',
-                    'color': '#64748b',
-                    'values': raw_pts[:, j_idx, axis_idx].tolist(),
-                    'dashed': True
-                })
-
-    if is_norm:
-        st.info('💡 **신체 정규화 (Norm)**: 골반을 화면 중앙에 고정하고 신체 크기를 통일합니다. 피사체 이동이나 카메라 거리에 무관하게 순수 관절 각도/신전 움직임만 즉시 관찰할 수 있습니다.')
-    else:
-        st.info('💡 **원본 영상 좌표 (Unnorm)**: 카메라 화각 내 실제 위치와 크기 비율을 그대로 반영하여 검은 배경에 스켈레톤을 그립니다.')
-
-    # 1) 즉각 렌더링되는 인터랙티브 HTML5 캔버스 플레이어 + 연동 그래프
-    render_skeleton_player_component(
-        log,
-        is_norm=is_norm,
-        confidence=confidence,
-        apply_smoothing=apply_smoothing,
-        smooth_window=smooth_window,
-        hide_face=hide_face,
-        chart_series=chart_series,
-        chart_title=chart_title,
-        height=780
-    )
-
-    # 2) 특정 프레임 세부 관절 좌표 확인
-    with st.expander('🔍 특정 프레임 관절 좌표 수치표 보기 (정밀 검토)'):
-        frame_idx = st.slider(
-            '확인할 프레임 선택',
-            min_value=0,
-            max_value=total_frames - 1,
-            value=0,
-            format=f'프레임 %d / {total_frames}',
-            key=f'skel_inspect_slider_{source_id}'
-        )
-        t_sec = float(times[frame_idx]) if frame_idx < len(times) else frame_idx / 30.0
-        st.caption(f'프레임 #{frame_idx + 1} ({t_sec:.3f}초) 주요 관절 좌표')
-        frame_kpt = kpts[frame_idx]
-        key_indices = [11, 12, 13, 14, 15, 16, 5, 6]
-        data_rows = []
-        for kidx in key_indices:
-            x, y, conf = frame_kpt[kidx]
-            data_rows.append({
-                '관절': JOINT_DISPLAY_MAP.get(JOINTS[kidx], JOINTS[kidx]),
-                'X': round(float(x), 4),
-                'Y': round(float(y), 4),
-                '신뢰도': round(float(conf), 2)
-            })
-        st.dataframe(pd.DataFrame(data_rows), hide_index=True)
-
-    # 3) 오프라인 비디오 파일 내보내기 (선택사항)
-    with st.expander('💾 오프라인 MP4 비디오 파일로 내보내기 (선택사항)'):
-        st.caption('브라우저 재생 외에 로컬 보관용 MP4 파일이 필요할 때만 인코딩합니다.')
-        out_dir = ROOT / 'data' / 'outputs' / 'skeleton_videos'
-        stem = Path(source_id).stem
-        mode_tag = 'norm' if is_norm else 'unnorm'
-        out_video_path = out_dir / f'{stem}_skeleton_{mode_tag}.mp4'
-
-        if st.button('MP4 비디오 파일 렌더링', key=f'btn_offline_mp4_{source_id}_{mode_tag}'):
-            prog = st.progress(0.0, text='MP4 인코딩 중...')
-            try:
-                render_skeleton_video(
-                    log=log,
-                    output_path=out_video_path,
-                    is_norm=is_norm,
-                    fps=30.0,
-                    confidence=confidence,
-                    on_progress=prog.progress
-                )
-                prog.progress(1.0, text='완료!')
-                st.success('MP4 생성 완료!')
-            except Exception as exc:
-                st.error(f'인코딩 실패: {exc}')
-
-        if out_video_path.is_file():
-            st.download_button(
-                '생성된 MP4 다운로드',
-                out_video_path.read_bytes(),
-                file_name=out_video_path.name,
-                mime='video/mp4',
-                key=f'dl_offline_{source_id}_{mode_tag}'
-            )
-
-
-# ==============================================================================
-# TAB 3: 🎥 오버레이 비디오 생성
-# ==============================================================================
-def render_overlay_tab(log, table, files, source_id):
-    st.subheader('🎥 원본 영상 스켈레톤 오버레이 합성')
-    from analysis.video_ui import video_panel
-    video_panel(log, table if '.csv' in files else None, source_id)
-
-
-# ==============================================================================
-# TAB 4: 🎯 카운트 시뮬레이션 실험
-# ==============================================================================
-def render_count_tab(table, log, ctx, time_column):
-    st.subheader('🎯 카운트 판정 파라미터 시뮬레이션')
-    count_simulation_panel(table, log, ctx, time_column)
-
-
-def count_simulation_panel(table, log, ctx, time_column):
-    panel_help('카운트 실험', '추출된 관절 신호(Relative Y, 각도 등)를 기반으로 FSM 카운트 파라미터를 조절하여 반복 횟수가 정상 판정되는지 시뮬레이션합니다.',
-               '- **신호 곡선**: NPZ에 저장된 프레임별 실시간 측정값(좌/우)입니다.\n'
-               '- **시작값(Start)**: 편안한 휴식 상태의 기준값입니다.\n'
-               '- **목표값(Target)**: 신전 또는 굴곡 완료 시의 도달 목표값입니다.\n'
-               '- **카운트 조건**: 40% 이상 가동 범위 도달 후 정점에서 5% 이상 하강(반전) 시 1회로 카운트됩니다.\n'
-               '- **품질 등급**: 70% 이상 PERFECT(+1점), 50%~70% GOOD(+0.5점), 35%~50% NORMAL(+0.25점)')
-
-    col_side, col_dir = st.columns(2)
-    side = col_side.radio('실험할 다리/팔 (Side)', ['right', 'left'],
-                          format_func=lambda s: {'right': '오른쪽 (Right)', 'left': '왼쪽 (Left)'}[s],
-                          horizontal=True, key='sim_side')
-
-    val_col = f'{side}_value'
-    if val_col not in table:
-        st.warning(f'데이터에 {side} 측정값이 없습니다.')
-        return
-
-    series = table[val_col].dropna()
-    if series.empty:
-        st.warning(f'{side} 측정값에 유효한 데이터가 없습니다.')
-        return
-
-    v_min, v_max = float(series.min()), float(series.max())
-    cfg_direction = ctx.get('motion_direction', 'INCREASING')
-    motion_dir = col_dir.selectbox('동작 방향 (Motion Direction)', ['INCREASING', 'DECREASING'],
-                                   index=0 if cfg_direction == 'INCREASING' else 1, key='sim_direction')
-
-    default_start = v_min if motion_dir == 'INCREASING' else v_max
-    default_target = v_max if motion_dir == 'INCREASING' else v_min
-    cfg_th = ctx.get('default_thresholds', {}).get(side, {})
-    if 'start_val' in cfg_th and 'target_val' in cfg_th:
-        default_start = float(cfg_th['start_val'])
-        default_target = float(cfg_th['target_val'])
-
-    p1, p2 = st.columns(2)
-    start_val = p1.number_input('시작 기준값 (start_val)', value=round(default_start, 4), format='%.4f', key=f'sim_start_{side}')
-    target_val = p2.number_input('목표 도달값 (target_val)', value=round(default_target, 4), format='%.4f', key=f'sim_target_{side}')
-
-    with st.expander('세부 판정 비율 설정'):
-        c1, c2, c3 = st.columns(3)
-        act_ratio = c1.slider('동작 개시 비율 (Activation Ratio)', 0.10, 0.80, 0.40, 0.05, key=f'sim_act_{side}')
-        rev_ratio = c2.slider('변곡점 확인 폭 (Reversal Ratio)', 0.01, 0.20, 0.05, 0.01, key=f'sim_rev_{side}')
-        ret_ratio = c3.slider('복귀 판정 비율 (Return Ratio)', 0.05, 0.50, 0.30, 0.05, key=f'sim_ret_{side}')
-
-    run_sim = st.button('🎯 카운트 시뮬레이션 실행', type='primary', use_container_width=True, key=f'run_sim_btn_{side}')
-
-    state_key = f'sim_results_{side}'
-    if run_sim:
-        fsm = SideFSM(
-            side_name=side,
-            motion_direction=motion_dir,
-            thresholds={'start_val': start_val, 'target_val': target_val},
-            target_reps=1000,
-            scoring=True,
-            min_activation_ratio=act_ratio,
-            return_ratio=ret_ratio
-        )
-
-        sim_events = []
-        valid_df = table.dropna(subset=[val_col]).copy()
-
-        for _, row in valid_df.iterrows():
-            t = row[time_column]
-            v = row[val_col]
-            res = fsm.update(v, allow_count=True)
-            if res['is_count_updated']:
-                rep = fsm.completed_reps_history[-1]
-                sim_events.append({
-                    time_column: round(float(t), 3),
-                    'rep_count': int(rep['rep_num']),
-                    'peak_val': round(float(rep['max_val'] if motion_dir == 'INCREASING' else rep['min_val']), 4),
-                    'achieved_rom': round(float(rep['achieved_rom']), 4),
-                    'quality': rep['quality'],
-                    'score_delta': float(rep['score_delta']),
-                    'total_score': float(rep['total_score']),
-                    'side': side
-                })
-
-        st.session_state[state_key] = {
-            'events': sim_events,
-            'rep_count': fsm.rep_count,
-            'total_score': fsm.total_score,
-            'start_val': start_val,
-            'target_val': target_val,
+        preset_options = ['MAIN_OFFICIAL', 'CALIB_OFFICIAL', 'CUSTOM_FEATURE', 'LOG_SAVED'] if has_npz_kpts else ['LOG_SAVED']
+        preset_labels = {
+            'MAIN_OFFICIAL': '본 측정 방식 (MAIN)',
+            'CALIB_OFFICIAL': '캘리브레이션 방식 (CALIB)',
+            'CUSTOM_FEATURE': '4종 측정 방식 / 관절 직접 선택',
+            'LOG_SAVED': '로그 저장값 그대로 사용',
         }
+        sel_preset = c_preset.selectbox('측정 방식', preset_options, format_func=lambda k: preset_labels[k], key='sim_global_preset')
 
-    res_data = st.session_state.get(state_key)
-    if res_data:
-        sim_events = res_data['events']
-        rep_count = res_data['rep_count']
-        total_score = res_data['total_score']
+        base_ex_cfg = exercises_cfg.get(sel_ex, {})
+        if sel_preset == 'MAIN_OFFICIAL':
+            active_sim_mode = 'MAIN'
+            active_sim_cfg = config_for_mode(base_ex_cfg, 'MAIN')
+            active_eval_cfg = dict(active_sim_cfg.get('eval_config', {}))
+            custom_sig = f"MAIN_{active_eval_cfg.get('metric_type', 'COORDINATE')}"
+        elif sel_preset == 'CALIB_OFFICIAL':
+            active_sim_mode = 'CALIBRATION'
+            active_sim_cfg = config_for_mode(base_ex_cfg, 'CALIBRATION')
+            active_eval_cfg = dict(active_sim_cfg.get('eval_config', {}))
+            custom_sig = f"CALIB_{active_eval_cfg.get('metric_type', 'COORDINATE')}"
+        elif sel_preset == 'CUSTOM_FEATURE':
+            active_sim_mode = 'MAIN'
+            custom_mtype = st.radio(
+                '측정 방식 (4종)',
+                ['COORDINATE', 'RAW_COORDINATE', 'ANGLE', 'LENGTH'],
+                format_func=lambda m: {
+                    'COORDINATE': '정규화 Y좌표 (COORDINATE)',
+                    'RAW_COORDINATE': '비정규화 Y좌표 (RAW_COORDINATE)',
+                    'ANGLE': '3점 각도 (ANGLE)',
+                    'LENGTH': '2점 길이 (LENGTH)',
+                }[m],
+                horizontal=True,
+                key='sim_custom_mtype',
+            )
+            if custom_mtype in ('COORDINATE', 'RAW_COORDINATE'):
+                is_raw = (custom_mtype == 'RAW_COORDINATE')
+                tgt_key = st.selectbox('대상 관절', joint_keys, index=joint_keys.index('ankle'),
+                                       format_func=lambda k: SYMMETRIC_JOINT_PAIRS[k]['label'], key='sim_coord_target')
+                tp = SYMMETRIC_JOINT_PAIRS[tgt_key]
+                active_eval_cfg = {
+                    'metric_type': custom_mtype, 'axis': 'y',
+                    'target_kpt': {'left': tp['left'], 'right': tp['right']},
+                    'primary_kpts': {'left': [tp['left']], 'right': [tp['right']]},
+                    'motion_direction': 'DECREASING' if is_raw else 'INCREASING',
+                    'use_normalization': not is_raw, 'counting_method': 'PEAK_REVERSAL', 'posture_constraints': [],
+                }
+                custom_sig = f"{custom_mtype}_{tgt_key}"
+            elif custom_mtype == 'ANGLE':
+                ac1, ac2, ac3 = st.columns(3)
+                p1_k = ac1.selectbox('관절 1 (시작)', joint_keys, index=joint_keys.index('hip'), format_func=lambda k: SYMMETRIC_JOINT_PAIRS[k]['label'], key='sim_angle_p1')
+                p2_k = ac2.selectbox('관절 2 (중심각)', joint_keys, index=joint_keys.index('knee'), format_func=lambda k: SYMMETRIC_JOINT_PAIRS[k]['label'], key='sim_angle_p2')
+                p3_k = ac3.selectbox('관절 3 (끝)', joint_keys, index=joint_keys.index('ankle'), format_func=lambda k: SYMMETRIC_JOINT_PAIRS[k]['label'], key='sim_angle_p3')
+                j1, j2, j3 = SYMMETRIC_JOINT_PAIRS[p1_k], SYMMETRIC_JOINT_PAIRS[p2_k], SYMMETRIC_JOINT_PAIRS[p3_k]
+                active_eval_cfg = {
+                    'metric_type': 'ANGLE',
+                    'primary_kpts': {'left': [j1['left'], j2['left'], j3['left']], 'right': [j1['right'], j2['right'], j3['right']]},
+                    'motion_direction': 'INCREASING', 'use_normalization': True, 'counting_method': 'PEAK_REVERSAL', 'posture_constraints': [],
+                }
+                custom_sig = f"ANGLE_{p1_k}_{p2_k}_{p3_k}"
+            else:
+                lc1, lc2 = st.columns(2)
+                l1_k = lc1.selectbox('관절 1 (시작)', joint_keys, index=joint_keys.index('knee'), format_func=lambda k: SYMMETRIC_JOINT_PAIRS[k]['label'], key='sim_len_p1')
+                l2_k = lc2.selectbox('관절 2 (끝)', joint_keys, index=joint_keys.index('ankle'), format_func=lambda k: SYMMETRIC_JOINT_PAIRS[k]['label'], key='sim_len_p2')
+                j1, j2 = SYMMETRIC_JOINT_PAIRS[l1_k], SYMMETRIC_JOINT_PAIRS[l2_k]
+                active_eval_cfg = {
+                    'metric_type': 'LENGTH',
+                    'primary_kpts': {'left': [j1['left'], j2['left']], 'right': [j1['right'], j2['right']]},
+                    'motion_direction': 'DECREASING', 'use_normalization': True, 'counting_method': 'PEAK_REVERSAL', 'posture_constraints': [],
+                }
+                custom_sig = f"LEN_{l1_k}_{l2_k}"
+            active_sim_cfg = {'exercise_name': sel_ex, 'eval_config': active_eval_cfg, 'default_thresholds': base_ex_cfg.get('default_thresholds', {})}
+        else:
+            active_sim_mode = 'MAIN'
+            active_sim_cfg = dict(base_ex_cfg)
+            active_eval_cfg = dict(active_sim_cfg.get('eval_config', {}))
+            custom_sig = 'LOG_SAVED'
 
-        st.write('---')
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric('총 감지 횟수', f'{rep_count}회')
-        perfs = sum(1 for e in sim_events if e['quality'] == 'PERFECT')
-        goods = sum(1 for e in sim_events if e['quality'] == 'GOOD')
-        normals = sum(1 for e in sim_events if e['quality'] == 'BAD')
-        m2.metric('PERFECT (+1.0)', f'{perfs}회')
-        m3.metric('GOOD (+0.5)', f'{goods}회')
-        m4.metric('NORMAL (+0.25)', f'{normals}회')
-        m5.metric('총 획득 점수', f'{total_score:.2f}점')
+        c_post.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
+        use_posture = c_post.checkbox('자세 제약', value=bool(active_eval_cfg.get('posture_constraints')), disabled=(sel_preset == 'LOG_SAVED'), key='sim_global_posture')
+        c_sm.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
+        use_smooth = c_sm.checkbox('평활화(5f)', value=False, disabled=(sel_preset == 'LOG_SAVED'), key='sim_global_smooth')
 
-        valid_df = table.dropna(subset=[val_col]).copy()
-        graph_df = valid_df[[time_column, val_col]].copy()
-        events_df = pd.DataFrame(sim_events)
-
-        chart_line = alt.Chart(graph_df).mark_line(color='#2563eb', size=2).encode(
-            x=alt.X(f'{time_column}:Q', title='시간 (초)'),
-            y=alt.Y(f'{val_col}:Q', title=f'{side} 신호값'),
-            tooltip=[f'{time_column}:Q', alt.Tooltip(f'{val_col}:Q', format='.4f')]
+        sim_table = (
+            _compute_dynamic_simulation_table(log, table, active_sim_cfg, active_sim_mode, apply_smoothing=use_smooth, smooth_window=5)
+            if (sel_preset != 'LOG_SAVED' and has_npz_kpts)
+            else table.assign(left_posture_ok=True, right_posture_ok=True).reset_index(drop=True)
         )
 
-        rule_start = alt.Chart(pd.DataFrame({'y': [res_data['start_val']]})).mark_rule(
-            strokeDash=[4, 4], color='#16a34a', size=1.5
-        ).encode(y='y:Q')
-        rule_target = alt.Chart(pd.DataFrame({'y': [res_data['target_val']]})).mark_rule(
-            strokeDash=[4, 4], color='#9333ea', size=1.5
-        ).encode(y='y:Q')
+        r1, r2, r3, r4, r5, r6 = st.columns([1.0, 1.3, 1.0, 1.0, 1.0, 1.1])
+        side_choice = r1.selectbox('측정 방향', ['right', 'left', 'both'], format_func=lambda s: {'right': '오른쪽 (R)', 'left': '왼쪽 (L)', 'both': '양쪽 (L+R)'}[s], key='sim_global_side')
+        target_sides = ['left', 'right'] if side_choice == 'both' else [side_choice]
+        primary_side = 'right' if side_choice == 'both' else side_choice
 
-        layers = [chart_line, rule_start, rule_target]
+        algo_choice = r2.selectbox(
+            '판정 알고리즘',
+            ['PEAK_REVERSAL', 'CALIBRATION_CYCLE'],
+            format_func=lambda a: '본측정 FSM (반전)' if a == 'PEAK_REVERSAL' else '캘리브레이션 (30% 상승)',
+            key='sim_global_algo',
+        )
+        cfg_dir = active_eval_cfg.get('motion_direction', ctx.get('motion_direction', 'INCREASING'))
+        motion_dir = r3.selectbox('신호 방향', ['INCREASING', 'DECREASING'], index=0 if cfg_dir == 'INCREASING' else 1, key=f'sim_global_dir_{sel_ex}_{custom_sig}')
 
-        if not events_df.empty:
-            rule_events = alt.Chart(events_df).mark_rule(
-                strokeDash=[6, 3], size=2, opacity=0.8
-            ).encode(
-                x=f'{time_column}:Q',
-                color=alt.Color('quality:N', scale=alt.Scale(
-                    domain=['PERFECT', 'GOOD', 'BAD'],
-                    range=['#16a34a', '#2563eb', '#ca8a04']
-                ), legend=alt.Legend(title='판정 등급')),
-                tooltip=[
-                    alt.Tooltip(f'{time_column}:Q', title='카운트 시간(초)', format='.2f'),
-                    alt.Tooltip('rep_count:Q', title='반복 번호'),
-                    alt.Tooltip('quality:N', title='품질 등급'),
-                    alt.Tooltip('peak_val:Q', title='정점 값', format='.4f'),
-                    alt.Tooltip('achieved_rom:Q', title='달성 ROM', format='.4f'),
-                ]
-            )
-            points_events = alt.Chart(events_df).mark_circle(size=80).encode(
-                x=f'{time_column}:Q',
-                y=alt.Y('peak_val:Q'),
-                color=alt.Color('quality:N', legend=None),
-                tooltip=[f'{time_column}:Q', 'rep_count:Q', 'quality:N', 'peak_val:Q']
-            )
-            layers.extend([rule_events, points_events])
+        series_primary = sim_table[f'{primary_side}_value'].dropna() if f'{primary_side}_value' in sim_table else pd.Series(dtype=float)
+        if series_primary.empty:
+            st.warning('유효한 측정 신호가 없습니다.')
+            return
 
-        combined_chart = alt.layer(*layers).properties(
-            title=f'카운트 시뮬레이션 결과 ({side}) | 초록점선: Start ({res_data["start_val"]}) | 보라점선: Target ({res_data["target_val"]})',
-            height=340
-        ).interactive()
+        est_start, est_peak, est_target = _estimate_smart_thresholds(series_primary, motion_dir, 0.85)
+        param_sig = f"{sel_ex}_{custom_sig}_{motion_dir}_{primary_side}"
+        start_key, target_key = f"sim_start_{param_sig}", f"sim_target_{param_sig}"
+        if start_key not in st.session_state or target_key not in st.session_state:
+            st.session_state[start_key] = float(est_start)
+            st.session_state[target_key] = float(est_target)
 
-        st.altair_chart(combined_chart, width='stretch')
+        def _on_autofit(s_k=start_key, t_k=target_key, s_v=float(est_start), t_v=float(est_target)):
+            st.session_state[s_k] = s_v
+            st.session_state[t_k] = t_v
 
-        if not events_df.empty:
-            st.caption('📋 감지된 반복 횟수 상세 내역:')
-            st.dataframe(events_df, hide_index=True)
-            st.download_button('카운트 시뮬레이션 결과 CSV 다운로드', events_df.to_csv(index=False).encode('utf-8-sig'),
-                               f'{side}_count_simulation.csv', 'text/csv')
+        start_val = r4.number_input('Start (0%)', format='%.4f', step=0.01, key=start_key)
+        target_val = r5.number_input('Target (100%)', format='%.4f', step=0.01, key=target_key)
+        r6.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
+        r6.button('현재 영상 맞춤', use_container_width=True, key=f'btn_autofit_{param_sig}', on_click=_on_autofit)
+
+        with st.expander(f"수식 요약: {_describe_eval_config(active_eval_cfg)} | 현재 영상 참고치: Baseline {est_start:.4f} · Peak {est_peak:.4f} · 85% Target {est_target:.4f}"):
+            p_c1, p_c2, p_c3 = st.columns(3)
+            act_ratio = p_c1.slider('동작 개시 비율 (Activation)', 0.10, 0.80, 0.30 if algo_choice == 'CALIBRATION_CYCLE' else 0.40, 0.05, key=f'sim_act_{algo_choice}')
+            rev_ratio = p_c2.slider('변곡점 반전 폭 (Reversal)', 0.01, 0.20, 0.05, 0.01, disabled=(algo_choice != 'PEAK_REVERSAL'), key='sim_rev_global')
+            ret_ratio = p_c3.slider('복귀 판정 비율 (Return)', 0.05, 0.50, 0.15 if algo_choice == 'CALIBRATION_CYCLE' else 0.30, 0.05, key=f'sim_ret_{algo_choice}')
+
+    all_events, side_summaries, learned_main_thresholds = [], {}, {}
+    for s in target_sides:
+        s_col, p_col = f'{s}_value', f'{s}_posture_ok'
+        if s_col not in sim_table:
+            continue
+        s_start, s_target = float(start_val), float(target_val)
+        if algo_choice == 'PEAK_REVERSAL':
+            fsm = SideFSM(s, motion_dir, {'start_val': s_start, 'target_val': s_target}, target_reps=1000, scoring=True,
+                          min_activation_ratio=act_ratio, return_ratio=max(0.01, min(ret_ratio, act_ratio - 0.01)), reversal_ratio=rev_ratio)
+            s_events = []
+            for _, row in sim_table.iterrows():
+                v = row[s_col]
+                if pd.isna(v):
+                    continue
+                res = fsm.update(float(v), allow_count=bool(row.get(p_col, True)) if use_posture else True)
+                if res['is_count_updated']:
+                    rep = fsm.completed_reps_history[-1]
+                    s_events.append({
+                        time_column: round(float(row[time_column]), 3), 'side': s, 'rep_count': int(rep['rep_num']),
+                        'peak_val': round(float(rep['max_val'] if motion_dir == 'INCREASING' else rep['min_val']), 4),
+                        'achieved_rom': round(float(rep['achieved_rom']), 4), 'quality': rep['quality'],
+                        'score_delta': float(rep['score_delta']), 'total_score': float(rep['total_score']),
+                    })
+            all_events.extend(s_events)
+            side_summaries[s] = {'rep_count': fsm.rep_count, 'total_score': fsm.total_score, 'start_val': s_start, 'target_val': s_target, 'events': s_events}
         else:
-            st.warning('설정한 임계값 조건으로 감지된 반복 동작이 없습니다. start_val과 target_val 범위를 조절해 보세요.')
+            if (motion_dir == 'INCREASING' and s_target <= s_start) or (motion_dir == 'DECREASING' and s_target >= s_start):
+                s_start, _, s_target = _estimate_smart_thresholds(sim_table[s_col], motion_dir, 0.85)
+                if s_target == s_start:
+                    s_target = s_start + (0.35 if motion_dir == 'INCREASING' else -0.35)
+            detector = CalibrationCycleDetector(
+                rest_seconds=float(base_ex_cfg.get('calibration_config', {}).get('rest_seconds', 0.5)),
+                metric_type=active_eval_cfg.get('metric_type', 'COORDINATE'), direction=motion_dir,
+                start_val=s_start, target_val=s_target, activation_fraction=act_ratio, rearm_fraction=max(0.01, min(ret_ratio, act_ratio - 0.01)),
+            )
+            s_events = []
+            for _, row in sim_table.iterrows():
+                t, v = float(row[time_column]), row[s_col]
+                val_f = None if pd.isna(v) else float(v)
+                if detector.update(val_f, t, allow_count=bool(row.get(p_col, True)) if use_posture else True):
+                    s_events.append({
+                        time_column: round(t, 3), 'side': s, 'rep_count': len(detector.peaks),
+                        'peak_val': round(float(val_f), 4) if val_f is not None else np.nan,
+                        'achieved_rom': round(float(detector.peaks[-1]), 4), 'quality': 'CALIBRATING', 'score_delta': 0.0, 'total_score': 0.0,
+                    })
+            all_events.extend(s_events)
+            if detector.ready and detector.peaks:
+                sign = -1.0 if motion_dir == 'DECREASING' else 1.0
+                learned_main_thresholds[s] = {
+                    'start_val': round(float(detector.baseline), 4),
+                    'target_val': round(float(detector.baseline + sign * 0.85 * float(np.median(detector.peaks[-3:]))), 4),
+                }
+            side_summaries[s] = {'rep_count': len(detector.peaks), 'total_score': 0.0, 'start_val': s_start, 'target_val': s_target, 'events': s_events}
+
+    p_info = side_summaries.get(primary_side, {'rep_count': 0, 'total_score': 0.0, 'start_val': start_val, 'target_val': target_val, 'events': []})
+    ev_list = p_info['events']
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric(f'{primary_side.upper()} 감지 횟수', f"{p_info['rep_count']}회")
+    m2.metric('PERFECT (+1.0)', f"{sum(1 for e in ev_list if e['quality'] == 'PERFECT')}회")
+    m3.metric('GOOD (+0.5)', f"{sum(1 for e in ev_list if e['quality'] == 'GOOD')}회")
+    m4.metric('NORMAL (+0.25)', f"{sum(1 for e in ev_list if e['quality'] == 'BAD')}회")
+    m5.metric('총 점수', f"{p_info['total_score']:.2f}점")
+
+    if primary_side in learned_main_thresholds:
+        l_th = learned_main_thresholds[primary_side]
+        def _apply_calib(s_k=start_key, t_k=target_key, s_v=float(l_th['start_val']), t_v=float(l_th['target_val'])):
+            st.session_state[s_k] = s_v
+            st.session_state[t_k] = t_v
+        c_cal1, c_cal2 = st.columns([3, 1])
+        c_cal1.info(f"산출된 캘리브레이션 임계값(85%): Start={l_th['start_val']:.4f} → Target={l_th['target_val']:.4f}")
+        c_cal2.button('현재 임계값에 적용', key=f'btn_copy_calib_{param_sig}', use_container_width=True, on_click=_apply_calib)
+
+    plot_cols = [f'{s}_value' for s in target_sides if f'{s}_value' in sim_table]
+    melted = sim_table.dropna(subset=plot_cols, how='all')[[time_column] + plot_cols].melt(id_vars=time_column, var_name='series', value_name='value').dropna()
+    melted['side'] = melted['series'].str.replace('_value', '', regex=False)
+
+    s_v, t_v = p_info['start_val'], p_info['target_val']
+    act_v = s_v + act_ratio * (t_v - s_v)
+    thresholds_df = pd.DataFrame([
+        {'y': s_v, 'label': f'Start (0%: {s_v:.3f})', 'color': '#16a34a'},
+        {'y': act_v, 'label': f'Act ({int(act_ratio*100)}%: {act_v:.3f})', 'color': '#f59e0b'},
+        {'y': t_v, 'label': f'Target (100%: {t_v:.3f})', 'color': '#9333ea'},
+    ])
+    layers = [
+        alt.Chart(melted).mark_line(size=2.0).encode(
+            x=alt.X(f'{time_column}:Q', title='시간 (초)'),
+            y=alt.Y('value:Q', title='측정 신호값', scale=alt.Scale(zero=False)),
+            color=alt.Color('side:N', title='방향', scale=alt.Scale(domain=['left', 'right'], range=['#2563eb', '#dc2626'])),
+            tooltip=[alt.Tooltip(f'{time_column}:Q', format='.3f'), 'side:N', alt.Tooltip('value:Q', format='.4f')],
+        ),
+        alt.Chart(thresholds_df).mark_rule(strokeDash=[4, 4], size=1.5).encode(
+            y='y:Q',
+            color=alt.Color('label:N', title='기준선', scale=alt.Scale(domain=thresholds_df['label'].tolist(), range=thresholds_df['color'].tolist())),
+            tooltip=['label:N', alt.Tooltip('y:Q', format='.4f')],
+        ),
+    ]
+    events_df = pd.DataFrame(all_events)
+    if not events_df.empty:
+        layers.append(alt.Chart(events_df).mark_rule(strokeDash=[6, 3], size=2, opacity=0.85).encode(
+            x=f'{time_column}:Q',
+            color=alt.Color('quality:N', scale=alt.Scale(domain=['PERFECT', 'GOOD', 'BAD', 'CALIBRATING'], range=['#16a34a', '#2563eb', '#ca8a04', '#06b6d4'])),
+            tooltip=[alt.Tooltip(f'{time_column}:Q', format='.2f'), 'side:N', 'rep_count:Q', 'quality:N', alt.Tooltip('peak_val:Q', format='.4f')],
+        ))
+        layers.append(alt.Chart(events_df).mark_circle(size=80).encode(
+            x=f'{time_column}:Q', y='peak_val:Q', color=alt.Color('quality:N', legend=None),
+        ))
+    st.altair_chart(alt.layer(*layers).resolve_scale(color='independent').properties(height=320).interactive(), width='stretch')
+
+    if not events_df.empty:
+        with st.expander(f'감지된 카운트 상세 내역 ({len(events_df)}건)'):
+            st.dataframe(events_df, hide_index=True)
 
 
 # ==============================================================================
-# TAB 5: 📋 세션 상세 데이터
+# TAB 2: 실전 캘리브레이션 및 본 측정 테스트 (NPZ 기반)
 # ==============================================================================
-def render_data_tab(filtered, table, time_column, markers, source_id, info):
-    st.subheader('📋 세션 상세 데이터 및 요약')
-    panel_help('상세 데이터', '원본 열과 수치를 확인하거나 필요한 시계열을 직접 선택해 분석·다운로드합니다.',
-        '- **원본 표**: 선택 구간의 데이터프레임입니다.\n'
-        '- **추가 시계열·통계**: 원하는 숫자 열을 선택하여 그래프를 그립니다.\n'
-        '- **세션 요약**: 측정 동작·모드·저장 경로 등 전체 세션 메타데이터를 확인합니다.\n'
-        '- **다운로드**: 선택 결과를 별도 CSV로 저장합니다.')
+def render_offline_pipeline_tab(log, ctx, source_id):
+    """NPZ 포즈 데이터를 사용하여 실시간 세션과 동일한 캘리브레이션 및 본 측정(TEST) 파이프라인을 실행합니다."""
+    if not log or 'keypoints' not in log:
+        st.warning('실전 캘리브레이션 / 본 측정 테스트를 수행하려면 keypoints가 포함된 NPZ 파일이 필요합니다.')
+        return
 
-    st.dataframe(filtered, hide_index=True)
+    kpts = log['keypoints'].astype(float).copy()
+    times = log.get('timestamps')
+    if times is None or len(times) != len(kpts):
+        times = np.arange(len(kpts)) * (1.0 / 30.0)
 
-    with st.expander('추가 시계열 및 통계 분석'):
-        numeric = [name for name in table.select_dtypes(include='number') if name != time_column]
-        columns = st.multiselect('추가로 볼 열 선택', numeric)
-        if columns:
-            plot_timeseries(filtered.set_index(time_column)[columns], markers, '선택 열')
-            st.dataframe(filtered[columns].describe().T.round(4))
+    aspects = log.get('image_aspect_ratio')
+    frame_sizes = log.get('frame_sizes')
 
-    with st.expander('세션 요약 · 원본 경로'):
-        st.code(source_id, language=None)
-        if info:
-            st.json(info)
+    config_path = ROOT / 'configs/exercise_kpt_config_coco.json'
+    exercises_cfg = json.loads(config_path.read_text(encoding='utf-8'))['exercises'] if config_path.exists() else {}
+    ex_keys = list(exercises_cfg.keys())
+    detected_ex = ctx.get('exercise') if ctx.get('exercise') in ex_keys else 'knee_extension'
 
-    st.download_button(
-        '선택 구간 전체 로그 CSV 다운로드',
-        filtered.to_csv(index=False).encode('utf-8-sig'),
-        f'{Path(source_id).stem}_log.csv',
-        'text/csv'
+    source_path = Path(source_id)
+    patient_id = ctx.get('patient') or '0000'
+    round_no = 1
+    if 'round' in source_path.stem.lower():
+        import re
+        m = re.search(r'round(\d+)', source_path.stem.lower())
+        if m:
+            round_no = int(m.group(1))
+
+    c1, c2, c3, c4 = st.columns([1.5, 1.2, 1.0, 1.3])
+    sel_exercise = c1.selectbox(
+        '운동 동작',
+        ex_keys,
+        index=ex_keys.index(detected_ex) if detected_ex in ex_keys else 0,
+        format_func=lambda k: exercises_cfg[k].get('display_name_kr', k),
+        key='pipe_exercise',
     )
+    test_mode = c2.radio('실행 모드', ['CALIBRATION (캘리브레이션)', 'MAIN (본 측정)'], key='pipe_test_mode')
+    is_calib = test_mode.startswith('CALIBRATION')
+
+    patient_val = c3.text_input('환자번호', value=str(patient_id).zfill(4), max_chars=4, key='pipe_patient')
+    round_val = c4.number_input('라운드 번호', min_value=1, value=round_no, step=1, key='pipe_round')
+
+    manager = DataManager(player_id=patient_val, log_root=ROOT / 'data')
+    saved_thresholds = manager.get_custom_threshold(sel_exercise)
+
+    if is_calib:
+        st.markdown("##### 캘리브레이션 테스트 (3회 안정 수행 및 임계값 산출)")
+        st.caption("양측 발/팔의 안정 상태(Baseline)와 3회 가동 범위(ROM)를 추적하여 85% 맞춤형 임계값을 산출합니다.")
+        ex_cfg = config_for_mode(exercises_cfg[sel_exercise], 'CALIBRATION')
+        engine = MotionEngine(config=ex_cfg, mode='CALIBRATION')
+        engine.exercise_name = sel_exercise
+        controller = SessionController(motion_engine=engine, data_manager=manager)
+        filter_engine = OneEuroKeypointFilter()
+
+        run_btn = st.button('캘리브레이션 분석 실행', type='primary', key='btn_run_calib')
+        if run_btn:
+            with st.spinner('NPZ 프레임 분석 중...'):
+                calib_history = []
+                left_values, right_values = [], []
+                timestamps = []
+                for idx in range(len(kpts)):
+                    t = float(times[idx])
+                    mat = kpts[idx]
+                    aspect = float(aspects[idx]) if (aspects is not None and idx < len(aspects) and np.isfinite(aspects[idx]) and aspects[idx] > 0) else 1.0
+                    w_px, h_px = (int(frame_sizes[idx][0]), int(frame_sizes[idx][1])) if (frame_sizes is not None and idx < len(frame_sizes) and np.all(np.isfinite(frame_sizes[idx]))) else (1280, 720)
+
+                    raw_list = [
+                        {'id': j, 'x': float(mat[j, 0]), 'y': float(mat[j, 1]), 'score': float(mat[j, 2]) if np.isfinite(mat[j, 2]) else 0.0,
+                         'image_aspect_ratio': aspect, 'image_width': w_px, 'image_height': h_px}
+                        for j in range(min(17, len(mat))) if np.isfinite(mat[j, 0]) and np.isfinite(mat[j, 1])
+                    ]
+                    filtered = filter_engine.update(raw_list, timestamp=t)
+                    is_occ = controller.check_occlusion(filtered) if filtered else True
+                    cal_res = controller.process_calibration_frame(filtered, is_occ, now=t)
+                    timestamps.append(t)
+                    left_values.append(controller.last_left_data.get('val'))
+                    right_values.append(controller.last_right_data.get('val'))
+                    calib_history.append(cal_res)
+
+                st.session_state['pipe_calib_result'] = {
+                    'controller': controller,
+                    'timestamps': timestamps,
+                    'left_values': left_values,
+                    'right_values': right_values,
+                    'last_status': calib_history[-1] if calib_history else {},
+                }
+
+        calib_res = st.session_state.get('pipe_calib_result')
+        if calib_res:
+            ctrl = calib_res['controller']
+            status = calib_res['last_status']
+            rep_l = ctrl.calib_reps_left
+            rep_r = ctrl.calib_reps_right
+            final_step = ctrl.calib_step
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric('최종 상태', final_step)
+            m2.metric('왼쪽 감지 횟수', f"{rep_l} / 3회")
+            m3.metric('오른쪽 감지 횟수', f"{rep_r} / 3회")
+            is_success = (final_step in ('FINISHED', 'COOLDOWN') or (rep_l >= 3 and rep_r >= 3))
+            m4.metric('캘리브레이션 판정', '성공' if is_success else '미완료')
+
+            if is_success:
+                try:
+                    ctrl.calib_step = 'FINISHED'
+                    th_out = ctrl.compute_and_save_thresholds(sel_exercise)
+                    st.success(f"임계값 산출 성공 ({sel_exercise})")
+                    st.json(th_out)
+
+                    save_col1, save_col2 = st.columns([2, 1])
+                    save_path_preview = ROOT / f"data/{patient_val}/{date.today().isoformat()}/{sel_exercise}/round{str(round_val).zfill(2)}_thresholds.json"
+                    save_col1.caption(f"저장 예정 위치: `{save_path_preview}`")
+                    if save_col2.button('이 임계값을 정규 파일로 저장 (확정)', key='btn_save_calib_json'):
+                        manager.save_custom_threshold(sel_exercise, th_out, is_confirmed=True)
+                        st.success(f"정규 임계값 파일이 저장되었습니다.")
+                except Exception as exc:
+                    st.warning(f"임계값 생성 중 주의: {exc}")
+            else:
+                st.info("양쪽 모두 안정 상태에서 3회 이상 가동 범위 동작이 완료되어야 캘리브레이션이 확정됩니다.")
+
+    else:
+        st.markdown("##### 본 측정(MAIN) 카운트 및 점수 테스트")
+        st.caption("저장된 캘리브레이션 임계값 또는 사용자 설정 임계값을 바탕으로 본 측정을 실행하고 카운트/품질을 평가합니다.")
+
+        custom_th = saved_thresholds
+        th_src_label = "저장된 캘리브레이션 파일 발견" if custom_th else "저장된 캘리브레이션 없음 (기본값 사용)"
+        st.info(f"임계값 상태: {th_src_label}")
+
+        use_default = False
+        if not custom_th:
+            use_default = st.checkbox('동작 기본 임계값(default_thresholds)으로 테스트 진행', value=True)
+            if use_default:
+                custom_th = exercises_cfg[sel_exercise].get('default_thresholds')
+
+        run_main_btn = st.button('본 측정(MAIN) 분석 실행', type='primary', disabled=(not custom_th), key='btn_run_main')
+        if run_main_btn:
+            with st.spinner('NPZ 프레임 본 측정 분석 중...'):
+                ex_cfg = config_for_mode(exercises_cfg[sel_exercise], 'MAIN')
+                engine = MotionEngine(
+                    config=ex_cfg,
+                    custom_thresholds=custom_th,
+                    mode='MAIN',
+                    target_reps=1000,
+                )
+                engine.exercise_name = sel_exercise
+                controller = SessionController(motion_engine=engine, data_manager=manager)
+                filter_engine = OneEuroKeypointFilter()
+
+                rep_events = []
+                left_vals, right_vals = [], []
+                timestamps = []
+                for idx in range(len(kpts)):
+                    t = float(times[idx])
+                    mat = kpts[idx]
+                    aspect = float(aspects[idx]) if (aspects is not None and idx < len(aspects) and np.isfinite(aspects[idx]) and aspects[idx] > 0) else 1.0
+                    w_px, h_px = (int(frame_sizes[idx][0]), int(frame_sizes[idx][1])) if (frame_sizes is not None and idx < len(frame_sizes) and np.all(np.isfinite(frame_sizes[idx]))) else (1280, 720)
+
+                    raw_list = [
+                        {'id': j, 'x': float(mat[j, 0]), 'y': float(mat[j, 1]), 'score': float(mat[j, 2]) if np.isfinite(mat[j, 2]) else 0.0,
+                         'image_aspect_ratio': aspect, 'image_width': w_px, 'image_height': h_px}
+                        for j in range(min(17, len(mat))) if np.isfinite(mat[j, 0]) and np.isfinite(mat[j, 1])
+                    ]
+                    filtered = filter_engine.update(raw_list, timestamp=t)
+                    is_occ = controller.check_occlusion(filtered) if filtered else True
+                    l_data, r_data, _ = controller.process_main_frame(filtered, is_occ, now=t)
+                    timestamps.append(t)
+                    left_vals.append(l_data.get('val'))
+                    right_vals.append(r_data.get('val'))
+
+                    for side, d in (('left', l_data), ('right', r_data)):
+                        if d.get('is_count_updated'):
+                            fsm = engine.fsm_left if side == 'left' else engine.fsm_right
+                            rep = fsm.completed_reps_history[-1]
+                            rep_events.append({
+                                'time_sec': round(t, 3),
+                                'side': side,
+                                'rep_count': int(rep['rep_num']),
+                                'quality': rep['quality'],
+                                'achieved_rom': round(float(rep['achieved_rom']), 4),
+                                'score_delta': float(rep['score_delta']),
+                                'total_score': float(rep['total_score']),
+                            })
+
+                st.session_state['pipe_main_result'] = {
+                    'engine': engine,
+                    'events': rep_events,
+                    'timestamps': timestamps,
+                    'left_vals': left_vals,
+                    'right_vals': right_vals,
+                }
+
+        main_res = st.session_state.get('pipe_main_result')
+        if main_res:
+            eng = main_res['engine']
+            events = main_res['events']
+            ev_df = pd.DataFrame(events)
+
+            c_l1, c_l2, c_r1, c_r2 = st.columns(4)
+            c_l1.metric('왼쪽(L) 카운트', f"{eng.fsm_left.rep_count}회")
+            c_l2.metric('왼쪽 총 점수', f"{eng.fsm_left.total_score:.2f}점")
+            c_r1.metric('오른쪽(R) 카운트', f"{eng.fsm_right.rep_count}회")
+            c_r2.metric('오른쪽 총 점수', f"{eng.fsm_right.total_score:.2f}점")
+
+            if not ev_df.empty:
+                st.dataframe(ev_df, hide_index=True)
+            else:
+                st.info('본 측정 동안 감지된 카운트가 없습니다.')
+
+
+# ==============================================================================
+# TAB 3: 스켈레톤 모션 및 연동 그래프
+# ==============================================================================
+def render_skeleton_motion_tab(log, ctx, source_id):
+    if log is None or 'keypoints' not in log:
+        st.warning('스켈레톤 모션을 보려면 NPZ 파일이 필요합니다.')
+        return
+
+    c1, c2, c3, c4 = st.columns([1.2, 1.5, 0.8, 0.8])
+    norm_choice = c1.radio('좌표계', ['신체 정규화 (Norm)', '원본 영상 (Raw)'], horizontal=True, key='skel_norm_global')
+    is_norm = (norm_choice == '신체 정규화 (Norm)')
+
+    default_joints = [JOINTS[j] for j in ctx.get('joints', []) if j < len(JOINTS)] or ['right_ankle', 'right_knee']
+    selected_joints = c2.multiselect('연동 그래프 표시 관절 (Y축)', JOINTS, default=default_joints[:2],
+                                     format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j), key='skel_joints_global')
+    c3.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
+    apply_smoothing = c3.checkbox('평활화 (5f)', value=True, key='skel_smooth_global')
+    c4.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
+    hide_face = c4.checkbox('얼굴 숨김', value=True, key='skel_hide_face_global')
+
+    raw_pts = convert_coordinates(log, '신체 정규화' if is_norm else '영상 비율', 0.35)
+    pts = smooth_keypoints(raw_pts, window=5) if apply_smoothing else raw_pts
+
+    palette = ['#38bdf8', '#fb923c', '#10b981', '#facc15', '#a855f7', '#ec4899']
+    chart_series = []
+    for i, j_name in enumerate(selected_joints):
+        j_idx = JOINTS.index(j_name)
+        chart_series.append({
+            'name': f"{JOINT_DISPLAY_MAP.get(j_name, j_name)} Y",
+            'color': palette[i % len(palette)],
+            'values': pts[:, j_idx, 1].tolist(),
+            'dashed': False,
+        })
+
+    render_skeleton_player_component(
+        log, is_norm=is_norm, confidence=0.35, apply_smoothing=apply_smoothing,
+        smooth_window=5, hide_face=hide_face, chart_series=chart_series,
+        chart_title=f"관절 Y좌표 궤적 ({'Norm' if is_norm else 'Raw'}) - 그래프 클릭 시 해당 프레임 이동",
+        height=720,
+    )
+
+
+# ==============================================================================
+# TAB 4: 신호 및 관절 그래프
+# ==============================================================================
+def render_graph_tab(table, log, ctx, time_column, source_id):
+    first, last = float(table[time_column].min()), float(table[time_column].max())
+    c_type, c_side, c_range = st.columns([1.8, 0.9, 1.5])
+    data_type = c_type.radio(
+        '그래프 종류',
+        ['운동 측정 신호 (Value)', '개별 관절 좌표 (17 Joints)', '2점 관절 길이/변위'],
+        horizontal=True, key='graph_main_data_type',
+    )
+    side_sel = c_side.radio('좌우', ['양쪽', '오른쪽', '왼쪽'], horizontal=True, key='analysis_side')
+    sides = ['left', 'right'] if side_sel == '양쪽' else (['right'] if side_sel == '오른쪽' else ['left'])
+    bounds = c_range.slider('구간 (초)', first, last, (first, last), key=f'analysis_range_{source_id}') if last > first else (first, last)
+
+    filtered = table.loc[table[time_column].between(*bounds)]
+    full_events = count_events(table, time_column)
+    markers = full_events.loc[full_events[time_column].between(*bounds) & full_events.side.isin(sides)]
+
+    if data_type == '운동 측정 신호 (Value)':
+        value_cols = [f'{s}_value' for s in sides if f'{s}_value' in filtered]
+        if value_cols:
+            graph = filtered.set_index(time_column)[value_cols] * ctx['factor']
+            guides = pd.concat([threshold_guides(filtered, ctx, time_column, sides), quality_guides(filtered, ctx, time_column, sides)], axis=1)
+            plot_timeseries(graph, markers, ctx['unit'], guides, height=320)
+        else:
+            st.info('측정값 열이 없습니다.')
+
+        with st.expander(f'추적 상태 및 카운트 기록 ({len(markers)}건)'):
+            segments = state_segments(filtered, time_column)
+            if not segments.empty:
+                segments = segments.loc[segments.side.isin(sides)]
+                st.altair_chart(alt.Chart(segments).mark_bar().encode(
+                    x='start:Q', x2='end:Q', y='side:N', color='state:N',
+                ).properties(height=80), width='stretch')
+            if not markers.empty:
+                st.dataframe(markers, hide_index=True)
+
+    elif data_type == '개별 관절 좌표 (17 Joints)':
+        if log is None or 'keypoints' not in log:
+            st.info('NPZ 파일이 필요합니다.')
+            return
+        k1, k2, k3 = st.columns([1.2, 1.0, 2.0])
+        norm_mode = k1.selectbox('좌표계', ['신체 정규화', '영상 비율', '픽셀'], index=0, key='joint_norm_mode')
+        axis_choice = k2.selectbox('축', ['Y축', 'X축', '둘 다 (X&Y)'], index=0, key='joint_axis_choice')
+        default_j = [JOINTS[j] for j in ctx.get('joints', []) if j < len(JOINTS)] or ['right_ankle', 'right_knee']
+        sel_joints = k3.multiselect('관절 선택', JOINTS, default=default_j, format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j), key='joint_plot_select')
+        if sel_joints:
+            points = convert_coordinates(log, norm_mode, 0.35)
+            times = log['timestamps']
+            mask = (times >= bounds[0]) & (times <= bounds[1])
+            axes = [1] if axis_choice == 'Y축' else ([0] if axis_choice == 'X축' else [0, 1])
+            ax_lbl = {0: 'X', 1: 'Y'}
+            graph_df = pd.DataFrame(
+                {f'{j}_{ax_lbl[a]}': points[mask, JOINTS.index(j), a] for j in sel_joints for a in axes},
+                index=pd.Index(times[mask], name=time_column),
+            )
+            plot_timeseries(graph_df, markers, f'{axis_choice} ({norm_mode})', show_points=True, height=320)
+
+    else:
+        if log is None or 'keypoints' not in log:
+            st.info('NPZ 파일이 필요합니다.')
+            return
+        d1, d2, d3, d4 = st.columns(4)
+        norm_mode = d1.selectbox('좌표계', ['신체 정규화', '영상 비율', '픽셀'], index=0, key='delta_norm_mode')
+        ref_j = d2.selectbox('관절 1 (기준)', JOINTS, index=JOINTS.index('right_knee'), format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j), key='delta_ref')
+        tgt_j = d3.selectbox('관절 2 (대상)', JOINTS, index=JOINTS.index('right_ankle'), format_func=lambda j: JOINT_DISPLAY_MAP.get(j, j), key='delta_tgt')
+        m_choice = d4.selectbox('측정 항목', ['2D 유클리드 길이 (Distance)', 'Y축 차이 (Target Y - Ref Y)', 'X축 차이 (Target X - Ref X)'], key='delta_metric')
+
+        points = convert_coordinates(log, norm_mode, 0.35)
+        times = log['timestamps']
+        mask = (times >= bounds[0]) & (times <= bounds[1])
+        p_ref = points[mask, JOINTS.index(ref_j), :2]
+        p_tgt = points[mask, JOINTS.index(tgt_j), :2]
+        if m_choice.startswith('2D'):
+            vals = np.sqrt(np.sum((p_tgt - p_ref) ** 2, axis=1))
+        elif m_choice.startswith('Y축'):
+            vals = p_tgt[:, 1] - p_ref[:, 1]
+        else:
+            vals = p_tgt[:, 0] - p_ref[:, 0]
+        delta_df = pd.DataFrame({f'{tgt_j}-{ref_j}': vals}, index=pd.Index(times[mask], name=time_column))
+        plot_timeseries(delta_df, markers, f'{m_choice} ({norm_mode})', show_points=True, height=320)
 
 
 # ==============================================================================
@@ -919,64 +899,44 @@ def show_analysis():
             return
         log = files.get('.npz')
         table, time_column = files['.csv'] if '.csv' in files else (measurements(log), 'time_sec')
-        if 'video' in table and table['video'].nunique() > 1:
-            video = st.selectbox('영상', table['video'].dropna().unique())
-            table = table.loc[table['video'] == video].copy()
         table = table.sort_values(time_column)
         ctx = context(table, log)
         info = summary(log) if log is not None else {}
 
-        st.subheader(ctx['name'])
-        calibration_details(info, table)
-        st.caption(f'{ctx["label"]} · {table[time_column].nunique():,}개 시점')
-
         first, last = float(table[time_column].min()), float(table[time_column].max())
-        cards = st.columns(3)
-        cards[0].metric('기록 구간', f'{last-first:.2f}초' if time_column == 'time_sec' else f'{last-first:g}행')
-        for card, side, label in zip(cards[1:], ('left', 'right'), ('왼쪽 카운트', '오른쪽 카운트')):
-            counts = pd.to_numeric(table.get(f'{side}_rep_count', pd.Series(dtype=float)), errors='coerce').dropna()
-            card.metric(label, int(counts.iloc[-1]) if len(counts) else info.get(f'{side}_reps', '—'),
-                        help='전체 로그의 마지막 누적 횟수입니다.')
+        l_cnt = pd.to_numeric(table.get('left_rep_count', pd.Series(dtype=float)), errors='coerce').dropna()
+        r_cnt = pd.to_numeric(table.get('right_rep_count', pd.Series(dtype=float)), errors='coerce').dropna()
+        l_reps = int(l_cnt.iloc[-1]) if len(l_cnt) else info.get('left_reps', 0)
+        r_reps = int(r_cnt.iloc[-1]) if len(r_cnt) else info.get('right_reps', 0)
 
-        with st.expander('구간 및 필터 설정'):
-            st.caption('선택한 시간 구간과 좌우가 아래 분석 탭에 적용됩니다.')
-            bounds = st.slider('확인 구간 (초)' if time_column == 'time_sec' else '확인 구간 (행)',
-                first, last, (first, last), key=f'analysis_range_{source_id}') if last > first else (first, last)
-            side = st.radio('좌우 선택', ['양쪽', '왼쪽', '오른쪽'], horizontal=True, key='analysis_side')
-            show_thresholds = st.checkbox('설정 threshold 표시', value=True)
-            show_quality = st.checkbox('Perfect · Good · Normal 기준 표시', value=True,
-                                       disabled=ctx['counting_method'] == 'TARGET_POSITION')
-            show_events = st.checkbox('카운트 시점 표시', value=True, key='show_count_events')
+        st.caption(
+            f"**{ctx['name']}** · `{ctx['metric']}` ({ctx['label']}) · "
+            f"기록 구간 **{last - first:.1f}초** ({len(table):,} 프레임) · "
+            f"기록 카운트 **L {l_reps}회 / R {r_reps}회**"
+        )
 
-        sides = ['left', 'right'] if side == '양쪽' else ['left' if side == '왼쪽' else 'right']
-        filtered = table.loc[table[time_column].between(*bounds)]
-        full_events = count_events(table, time_column)
-        events = full_events.loc[full_events[time_column].between(*bounds) & full_events.side.isin(sides)]
-        markers = events if show_events else events.iloc[:0]
-
-        # 5 Revamped Tabs
-        tab_graph, tab_skel_motion, tab_overlay, tab_count, tab_data = st.tabs([
-            '📊 신호 및 관절 좌표 그래프',
-            '🦴 스켈레톤 단독 모션 (검은 배경)',
-            '🎥 오버레이 비디오 생성',
-            '🎯 카운트 시뮬레이션 실험',
-            '📋 세션 상세 데이터'
+        tab_count, tab_pipe, tab_skel, tab_graph, tab_overlay = st.tabs([
+            '카운트 시뮬레이션',
+            '실전 캘리브레이션/본측정 테스트',
+            '스켈레톤 모션 및 연동 그래프',
+            '신호 및 관절 그래프',
+            '오버레이 비디오 생성',
         ])
 
-        with tab_graph:
-            render_graph_tab(filtered, table, log, ctx, time_column, bounds, sides, markers, show_thresholds, show_quality, source_id)
+        with tab_count:
+            render_count_tab(table, log, ctx, time_column, source_id)
 
-        with tab_skel_motion:
-            render_skeleton_motion_tab(log, source_id)
+        with tab_pipe:
+            render_offline_pipeline_tab(log, ctx, source_id)
+
+        with tab_skel:
+            render_skeleton_motion_tab(log, ctx, source_id)
+
+        with tab_graph:
+            render_graph_tab(table, log, ctx, time_column, source_id)
 
         with tab_overlay:
-            render_overlay_tab(log, table, files, source_id)
-
-        with tab_count:
-            render_count_tab(table, log, ctx, time_column)
-
-        with tab_data:
-            render_data_tab(filtered, table, time_column, markers, source_id, info)
+            video_panel(log, table if '.csv' in files else None, source_id)
 
     except (OSError, ValueError, KeyError, TypeError, EOFError, BadZipFile) as exc:
         st.error(f'로그를 읽을 수 없습니다: {exc}')

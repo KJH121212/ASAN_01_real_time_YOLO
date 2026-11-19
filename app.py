@@ -173,6 +173,14 @@ class SocketExperiment:
                             metric_type=packet.get('measurement', {}).get('metric_type', ''))
                     elif kind == 'VIDEO_PROGRESS':
                         self.state['progress'] = packet
+                    elif kind == 'SESSION_PREPARING':
+                        rem = packet.get('remaining_seconds')
+                        if rem is not None:
+                            self.state['preview_notice'] = f'측정 준비 중입니다 ({rem}초). 기본 자세를 취해 주세요.'
+                    elif kind == 'SESSION_MEASUREMENT_STARTED':
+                        self.state['preview_notice'] = ''
+                        if not self.stopping:
+                            self.state['status'] = 'RUNNING'
                     elif kind in {'SESSION_MEASUREMENT_STARTED', 'VIDEO_STATUS'} and not self.stopping:
                         self.state['status'] = 'RUNNING'
                     elif kind in FINISH_EVENTS:
@@ -320,8 +328,6 @@ def measurement_tab():
                                    disabled=active)
             exercise = st.selectbox('동작', list(exercises),
                                     format_func=lambda key: exercises[key].get('display_name_kr', key), disabled=active)
-            if exercises[exercise].get('main_eval_config', {}).get('metric_type') == 'COORDINATE':
-                st.caption('캘리브레이션은 기존 상대 상승률 방식입니다. 본측정은 정규화 없는 발목 Y좌표로 Perfect 70%·Good 50%·Normal 35%를 구분하고 상승 피크가 확인되면 점수를 확정합니다. 카메라와 앉은 위치를 유지하세요.')
             patient_name = st.text_input('환자 이름 (선택)', disabled=active)
             round_col, set_col, target_col = st.columns(3)
             round_number = round_col.number_input('라운드', min_value=1, value=1, step=1, disabled=active)

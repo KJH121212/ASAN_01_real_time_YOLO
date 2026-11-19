@@ -1,5 +1,6 @@
-"""720p/1080p 웹캠 및 GoPro(가상 웹캠 / USB 이더넷 직접 스트림) 연결, 프록시 우회 및 고해상도 자동 다운스케일 처리."""
+"""720p/1080p 웹캠·GoPro 연결, 프록시 우회 및 자동 해상도 축소(다운스케일) 모듈."""
 
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-# OpenCV C++ 백엔드 탐색 경고([WARN:... VIDEOIO(DSHOW/MSMF)]) 콘솔 출력 억제
+# OpenCV의 장치 탐색 경고 로그([WARN:... VIDEOIO(DSHOW/MSMF)]) 출력 억제
 os.environ.setdefault("OPENCV_LOG_LEVEL", "OFF")
 
 import cv2
@@ -36,16 +37,16 @@ GOPRO_NO_PROXY_HOSTS = (
     "*.local",
 )
 
-# 실시간 추론·전송 속도 저하 방지를 위한 기본 최대 캡처 해상도 (720p)
+# 기본 최대 캡처 해상도 (720p)
 DEFAULT_MAX_CAMERA_WIDTH = 1280
 DEFAULT_MAX_CAMERA_HEIGHT = 720
 
-# 열기만 해도 콘솔에 'error = 0'을 출력하거나 검은 대기 화면만 내보내는 가상 카메라 이름 키워드
+# 실제 카메라가 아닌 가상 더미 카메라 판별 키워드
 _DUMMY_VIRTUAL_CAM_KEYWORDS = ("omen cam", "obs virtual", "xsplit", "manycam", "snap camera")
 
 
 def configure_local_and_gopro_no_proxy() -> None:
-    """로컬 WebSocket(127.0.0.1)과 GoPro USB 이더넷(172.2X.1XX.51)이 시스템 프록시를 타지 않도록 설정."""
+    """로컬 웹소켓과 GoPro USB 통신이 시스템 HTTP 프록시를 타지 않도록 NO_PROXY를 설정한다."""
     for env_key in ("NO_PROXY", "no_proxy"):
         existing = os.environ.get(env_key, "")
         items = [x.strip() for x in existing.split(",") if x.strip()]
@@ -54,7 +55,6 @@ def configure_local_and_gopro_no_proxy() -> None:
                 items.append(host)
         os.environ[env_key] = ",".join(items)
 
-    # OpenCV FFmpeg 백엔드가 환경변수 http_proxy를 참조해 로컬 UDP/HTTP 스트림을 차단하는 현상 방지
     if "OPENCV_FFMPEG_CAPTURE_OPTIONS" not in os.environ:
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "overrun_nonfatal;1|fifo_size;50000000"
 
@@ -63,7 +63,7 @@ configure_local_and_gopro_no_proxy()
 
 
 def _find_ffmpeg_exe() -> str | None:
-    """시스템 PATH 또는 내장된 imageio_ffmpeg 바이너리 경로 반환."""
+    """사용 가능한 ffmpeg 실행 파일 경로를 찾는다."""
     executable = shutil.which("ffmpeg")
     if executable:
         return executable
@@ -75,7 +75,7 @@ def _find_ffmpeg_exe() -> str | None:
 
 
 def list_dshow_video_devices() -> list[dict]:
-    """FFmpeg dshow 목록 조회를 통해 카메라를 직접 열지 않고도 0.05초 만에 정확한 DirectShow 장치 이름·순서를 가져옵니다."""
+    """ffmpeg로 Windows DirectShow 영상 장치 이름과 인덱스 목록을 가져온다."""
     ffmpeg_exe = _find_ffmpeg_exe()
     if not ffmpeg_exe:
         return []
@@ -93,7 +93,6 @@ def list_dshow_video_devices() -> list[dict]:
         return []
 
     devices = []
-    # 예: [dshow @ 0000...] "GoPro Webcam" (video) 또는 "HP True Vision FHD Camera" (none)
     pattern = re.compile(r'\[dshow\s+@\s+[0-9a-fA-F]+\]\s+"([^"]+)"\s+\((video|none)\)')
     for match in pattern.finditer(output):
         name, kind = match.group(1), match.group(2)
@@ -111,8 +110,8 @@ def list_dshow_video_devices() -> list[dict]:
     return devices
 
 
-def find_preferred_camera_index(default_idx: int = 2) -> int:
-    """DirectShow 장치 목록에서 'GoPro Webcam'이 있으면 해당 번호를, 없으면 활성 가능한 실제 카메라 번호를 반환."""
+def find_preferred_camera_index(default_idx: int = 1) -> int:
+    """GoPro Webcam이 있으면 그 번호를, 없으면 첫 번째 실제 카메라 번호를 반환한다."""
     devices = list_dshow_video_devices()
     for dev in devices:
         if dev["is_gopro"] and dev["kind"] == "video":
@@ -129,7 +128,7 @@ def compute_downscaled_size(
     max_width: int = DEFAULT_MAX_CAMERA_WIDTH,
     max_height: int = DEFAULT_MAX_CAMERA_HEIGHT,
 ) -> tuple[int, int]:
-    """원본 종횡비를 유지하면서 (max_width, max_height) 이하의 짝수 해상도를 계산합니다."""
+    """가로세로 비율을 유지하면서 max_width/max_height 이내(짝수 크기)로 축소 크기를 계산한다."""
     if width <= 0 or height <= 0:
         return width, height
     if not max_width or not max_height or (width <= max_width and height <= max_height):
@@ -145,7 +144,7 @@ def downscale_frame_if_needed(
     max_width: int = DEFAULT_MAX_CAMERA_WIDTH,
     max_height: int = DEFAULT_MAX_CAMERA_HEIGHT,
 ) -> np.ndarray:
-    """고프로 1080p/4K 등 과도한 고해상도 프레임을 지정 해상도(기본 720p)로 고속 리사이즈합니다."""
+    """프레임이 지정 해상도보다 크면 빠르게 리사이즈한다."""
     if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3:
         return frame
     h, w = frame.shape[:2]
@@ -156,7 +155,7 @@ def downscale_frame_if_needed(
 
 
 def detect_gopro_usb_ip() -> str | None:
-    """PC의 네트워크 인터페이스 중 GoPro USB RNDIS 대역(172.20~29.X.50/52~59)을 찾아 GoPro IP(.51)를 반환."""
+    """USB로 연결된 GoPro 네트워크 대역(172.2X.X.51)을 자동으로 찾는다."""
     candidates = []
     try:
         hostname = socket.gethostname()
@@ -181,7 +180,7 @@ def detect_gopro_usb_ip() -> str | None:
 
 
 def _proxy_free_http_get(url: str, timeout: float = 1.5) -> dict | None:
-    """Windows 레지스트리 및 환경변수 프록시를 100% 무시하고 직접 HTTP GET 수행."""
+    """시스템 프록시를 거치지 않고 HTTP GET 요청을 보낸다."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(url, headers={"User-Agent": "GoProWebcamClient/1.0"})
     try:
@@ -193,12 +192,12 @@ def _proxy_free_http_get(url: str, timeout: float = 1.5) -> dict | None:
 
 
 def query_gopro_usb_status(gopro_ip: str, timeout: float = 1.0) -> dict | None:
-    """프록시를 우회하여 GoPro USB 웹캠 상태(/gp/gpWebcam/STATUS) 조회."""
+    """GoPro USB 웹캠 상태(/gp/gpWebcam/STATUS)를 조회한다."""
     return _proxy_free_http_get(f"http://{gopro_ip}:8080/gp/gpWebcam/STATUS", timeout=timeout)
 
 
 def start_gopro_usb_webcam(gopro_ip: str, res: str = "720", fov: str = "4") -> bool:
-    """프록시를 우회하여 GoPro USB 웹캠 스트리밍 시작 명령 전송 (기본 720p로 대역폭/발열/지연 최소화)."""
+    """GoPro USB 인터페이스에 웹캠 스트림 시작 명령을 보낸다."""
     res_code = "7" if str(res) in ("720", "7") else ("4" if str(res) in ("480", "360", "540", "4") else "12")
     for url in (
         f"http://{gopro_ip}:8080/gp/gpWebcam/START?res={res_code}&fov={fov}",
@@ -212,22 +211,303 @@ def start_gopro_usb_webcam(gopro_ip: str, res: str = "720", fov: str = "4") -> b
 
 
 def stop_gopro_usb_webcam(gopro_ip: str) -> bool:
-    """프록시를 우회하여 GoPro USB 웹캠 스트리밍 중지."""
+    """GoPro USB 인터페이스에 웹캠 스트림 중지 명령을 보낸다."""
     resp = _proxy_free_http_get(f"http://{gopro_ip}:8080/gp/gpWebcam/STOP", timeout=1.5)
     return resp is not None
 
 
 def _is_active_nonblack_frame(frame: np.ndarray) -> bool:
-    """가상 카메라 대기 화면(예: OMEN Cam 검은색 배경 mean=0.5)과 실제 활성 카메라 영상을 구분합니다."""
+    """검은 대기 화면이 아니라 실제 카메라 영상이 들어오는 프레임인지 확인한다."""
     if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
         return False
     sample = frame[::8, ::8]
-    # OMEN Cam 등 가상 대기 화면은 배경이 검은색(mean < 2.0)이고 작은 로고만 있어 std만 약간 높으므로 mean > 5.0 기준 적용
     return bool(sample.mean() > 5.0)
 
 
+def _read_exact(stream, num_bytes: int, stop_event: threading.Event) -> bytearray | None:
+    """파이프에서 정확히 num_bytes 길이의 raw 프레임을 읽는다."""
+    buf = bytearray(num_bytes)
+    view = memoryview(buf)
+    pos = 0
+    while pos < num_bytes and not stop_event.is_set():
+        chunk_len = stream.readinto(view[pos:])
+        if not chunk_len:
+            return None
+        pos += chunk_len
+    if pos < num_bytes:
+        return None
+    return buf
+
+
+class FFmpegDShowCapture:
+    """FFmpeg DirectShow 파이프를 백그라운드 스레드로 비우는 캡처 래퍼.
+
+    GoPro Webcam 가상 카메라는 스플래시(대기 로고)에서 실영상으로 전환될 때
+    OpenCV CAP_DSHOW의 1초 타임아웃에 걸려 1 FPS 검은 화면으로 멈추는 문제가 있어,
+    번들 FFmpeg subprocess로 직접 수신하며 별도 스레드가 파이프를 즉시 비운다.
+    """
+
+    def __init__(
+        self,
+        ffmpeg_exe: str,
+        device_name: str,
+        width: int = DEFAULT_MAX_CAMERA_WIDTH,
+        height: int = DEFAULT_MAX_CAMERA_HEIGHT,
+        pixel_format: str | None = "bgr0",
+        startup_timeout: float = 5.0,
+    ) -> None:
+        self.ffmpeg_exe = ffmpeg_exe
+        self.device_name = device_name
+        self.width = int(width)
+        self.height = int(height)
+        self.pixel_format = pixel_format
+        self.startup_timeout = float(startup_timeout)
+        self.source_label = f"FFmpeg DirectShow ({device_name})"
+
+        self._frame_bytes = self.width * self.height * 3
+        self._proc: subprocess.Popen | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._first_frame_event = threading.Event()
+        self._cond = threading.Condition()
+
+        self._latest_frame: np.ndarray | None = None
+        self._frame_seq = 0
+        self._last_read_seq = 0
+        self._frame_times: deque[float] = deque(maxlen=60)
+        self._stderr_lines: deque[str] = deque(maxlen=25)
+        self._closed = False
+
+    def _build_command(self) -> list[str]:
+        """FFmpeg DirectShow 실행 커맨드를 구성한다."""
+        cmd = [
+            self.ffmpeg_exe,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "dshow",
+            "-rtbufsize",
+            "100M",
+        ]
+        if self.pixel_format:
+            # GoPro Webcam은 bgr0 1280x720 / 1920x1080을 네이티브 지원함
+            cmd.extend(["-pixel_format", self.pixel_format, "-video_size", f"{self.width}x{self.height}"])
+        cmd.extend(["-i", f"video={self.device_name}"])
+        if not self.pixel_format:
+            cmd.extend(["-vf", f"scale={self.width}:{self.height}"])
+        cmd.extend(["-f", "rawvideo", "-pix_fmt", "bgr24", "-"])
+        return cmd
+
+    def open(self) -> bool:
+        """FFmpeg 프로세스를 시작하고 첫 프레임 수신(또는 초기 종료)까지 대기한다."""
+        cmd = self._build_command()
+        startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=self._frame_bytes,
+                creationflags=startup_flags,
+            )
+        except OSError as exc:
+            self._stderr_lines.append(f"FFmpeg spawn failed: {exc}")
+            return False
+
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
+        self._reader_thread.start()
+        self._stderr_thread.start()
+
+        deadline = time.monotonic() + self.startup_timeout
+        while time.monotonic() < deadline:
+            if self._first_frame_event.wait(timeout=0.1):
+                return True
+            if self._proc.poll() is not None:
+                break
+
+        self.release()
+        return False
+
+    def _reader_loop(self) -> None:
+        """stdout 파이프에서 raw BGR 프레임을 계속 읽어 최신 슬롯을 갱신한다."""
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            while not self._stop_event.is_set():
+                raw = _read_exact(proc.stdout, self._frame_bytes, self._stop_event)
+                if raw is None:
+                    break
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
+                now = time.monotonic()
+                with self._cond:
+                    self._latest_frame = frame
+                    self._frame_seq += 1
+                    self._frame_times.append(now)
+                    self._first_frame_event.set()
+                    self._cond.notify_all()
+        except OSError:
+            pass
+        finally:
+            with self._cond:
+                self._cond.notify_all()
+
+    def _stderr_loop(self) -> None:
+        """stderr 파이프가 가득 차 FFmpeg가 멈추지 않도록 오류 메시지를 비운다."""
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            for raw_line in proc.stderr:
+                if self._stop_event.is_set():
+                    break
+                text = raw_line.decode("utf-8", errors="replace").strip()
+                if text:
+                    self._stderr_lines.append(text)
+        except OSError:
+            pass
+
+    def _calc_capture_fps(self) -> float:
+        """최근 수신 타임스탬프 기준 실제 캡처 FPS를 계산한다."""
+        if len(self._frame_times) < 2:
+            return 0.0
+        span = self._frame_times[-1] - self._frame_times[0]
+        return (len(self._frame_times) - 1) / span if span > 0 else 0.0
+
+    def isOpened(self) -> bool:
+        """프로세스가 아직 살아 있고 닫히지 않았는지 반환한다."""
+        return not self._closed and self._proc is not None and self._proc.poll() is None
+
+    def read_latest(self, last_seq: int, timeout: float = 0.25) -> tuple[bool, np.ndarray | None, int, float]:
+        """직전 last_seq 이후 새 프레임이 올 때까지 대기 후 반환한다."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while (
+                self._frame_seq == last_seq
+                and not self._stop_event.is_set()
+                and self.isOpened()
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False, None, last_seq, self._calc_capture_fps()
+                self._cond.wait(timeout=remaining)
+
+            if self._frame_seq > last_seq and self._latest_frame is not None:
+                return True, self._latest_frame, self._frame_seq, self._calc_capture_fps()
+            return False, None, last_seq, self._calc_capture_fps()
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        """OpenCV VideoCapture 호환용 단일 프레임 읽기."""
+        ok, frame, seq, _ = self.read_latest(self._last_read_seq, timeout=0.5)
+        if ok:
+            self._last_read_seq = seq
+        return ok, frame
+
+    def get(self, prop_id: int) -> float:
+        """해상도/FPS 프로퍼티 조회."""
+        if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.width)
+        if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.height)
+        if prop_id == cv2.CAP_PROP_FPS:
+            return self._calc_capture_fps()
+        return 0.0
+
+    def get_stderr_summary(self) -> str:
+        """최근 FFmpeg stderr 로그 요약을 반환한다."""
+        return " | ".join(self._stderr_lines)
+
+    def release(self) -> None:
+        """DirectShow COM 필터가 꼬이지 않도록 FFmpeg에 'q'를 보내 정상 종료한다."""
+        if self._closed:
+            return
+        self._closed = True
+
+        proc = self._proc
+        if proc is not None:
+            # stdout 리더를 끄기 전에 'q'로 FFmpeg를 먼저 종료시켜 파이프 쓰기 대기로 인한 강제 종료(rc=1)를 방지한다.
+            if proc.poll() is None and proc.stdin is not None:
+                try:
+                    proc.stdin.write(b"q\n")
+                    proc.stdin.flush()
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=2.5)
+            except subprocess.TimeoutExpired:
+                self._stop_event.set()
+                with self._cond:
+                    self._cond.notify_all()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+
+        self._stop_event.set()
+        with self._cond:
+            self._cond.notify_all()
+
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+
+        for thread in (self._reader_thread, self._stderr_thread):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=1.0)
+
+
+def open_ffmpeg_dshow_camera(
+    device_name: str,
+    width: int = DEFAULT_MAX_CAMERA_WIDTH,
+    height: int = DEFAULT_MAX_CAMERA_HEIGHT,
+    startup_timeout: float = 5.0,
+    log_prefix: str | None = "[CAMERA]",
+) -> FFmpegDShowCapture | None:
+    """지정한 DirectShow 장치명으로 FFmpeg DirectShow 캡처를 연다(bgr0 우선, 실패 시 자동 협상)."""
+    ffmpeg_exe = _find_ffmpeg_exe()
+    if not ffmpeg_exe:
+        if log_prefix:
+            print(f"{log_prefix} FFmpeg binary not found; cannot open DirectShow pipe for '{device_name}'.", flush=True)
+        return None
+
+    attempts = (
+        (f"bgr0 ({width}x{height})", "bgr0"),
+        ("auto-negotiated", None),
+    )
+    for label, pix_fmt in attempts:
+        if log_prefix:
+            print(f"{log_prefix} Attempting FFmpeg DirectShow '{device_name}' ({label})...", flush=True)
+        cap = FFmpegDShowCapture(
+            ffmpeg_exe=ffmpeg_exe,
+            device_name=device_name,
+            width=width,
+            height=height,
+            pixel_format=pix_fmt,
+            startup_timeout=startup_timeout,
+        )
+        if cap.open():
+            if log_prefix:
+                print(f"{log_prefix} Connected '{device_name}' via FFmpeg DirectShow ({label}).", flush=True)
+            return cap
+        err = cap.get_stderr_summary()
+        if err and log_prefix:
+            print(f"{log_prefix} FFmpeg DirectShow failed ({label}): {err}", flush=True)
+    return None
+
+
 def scan_available_cameras(max_index: int = 4) -> dict:
-    """현재 PC의 DirectShow 장치 이름을 먼저 조회하여 비활성/가상 더미 장치를 건드리지 않고 고속 진단합니다."""
+    """사용 가능한 카메라 목록과 GoPro USB 상태를 점검해 진단 정보를 반환한다."""
     configure_local_and_gopro_no_proxy()
     sys_proxies = urllib.request.getproxies()
     gopro_ip = detect_gopro_usb_ip()
@@ -242,35 +522,38 @@ def scan_available_cameras(max_index: int = 4) -> dict:
         dev_info = dev_by_idx.get(idx)
         dev_name = dev_info["name"] if dev_info else f"Camera {idx}"
 
-        # 1) 하드웨어적으로 비활성(none)인 장치(예: 닫힌 내장 카메라)는 열지 않고 즉시 표시 (OpenCV 경고 방지)
         if dev_info and dev_info["kind"] == "none":
             cameras.append({
                 "index": idx,
                 "name": dev_name,
                 "backend": "DSHOW",
-                "resolution": "비활성 장치",
+                "resolution": "Inactive device",
                 "active": False,
-                "status_tag": "⚪ 비활성(none)",
+                "status_tag": "Inactive (none)",
             })
             continue
 
-        # 2) OMEN Cam 등 열기만 해도 콘솔에 'error = 0'을 찍는 더미 가상 카메라는 직접 열지 않고 대기 상태로 표시
         if dev_info and dev_info["is_dummy_virtual"]:
             cameras.append({
                 "index": idx,
                 "name": dev_name,
                 "backend": "DSHOW",
-                "resolution": "가상 카메라",
+                "resolution": "Virtual camera",
                 "active": False,
-                "status_tag": "⚫ 가상 대기 장치",
+                "status_tag": "Virtual standby",
             })
             continue
 
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        try:
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                for _ in range(8):
+        if dev_info and dev_info["is_gopro"] and _find_ffmpeg_exe():
+            cap = open_ffmpeg_dshow_camera(
+                dev_name,
+                width=DEFAULT_MAX_CAMERA_WIDTH,
+                height=DEFAULT_MAX_CAMERA_HEIGHT,
+                startup_timeout=3.5,
+                log_prefix=None,
+            )
+            if cap is not None:
+                try:
                     ok, frame = cap.read()
                     if ThreadedWebcam._valid_frame(ok, frame):
                         raw_h, raw_w = frame.shape[:2]
@@ -279,9 +562,36 @@ def scan_available_cameras(max_index: int = 4) -> dict:
                         res_label = (
                             f"{raw_w}x{raw_h}"
                             if (raw_w, raw_h) == (out_w, out_h)
-                            else f"{raw_w}x{raw_h} → {out_w}x{out_h} 자동축소"
+                            else f"{raw_w}x{raw_h} -> {out_w}x{out_h}"
                         )
-                        status_tag = "🟢 활성 영상" if active else "⚫ 대기/검은 화면"
+                        cameras.append({
+                            "index": idx,
+                            "name": dev_name,
+                            "backend": "FFmpeg-DSHOW",
+                            "resolution": res_label,
+                            "active": active,
+                            "status_tag": "Active stream" if active else "Standby frame",
+                        })
+                finally:
+                    cap.release()
+            continue
+
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        try:
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                for _ in range(15):
+                    ok, frame = cap.read()
+                    if ThreadedWebcam._valid_frame(ok, frame):
+                        raw_h, raw_w = frame.shape[:2]
+                        out_w, out_h = compute_downscaled_size(raw_w, raw_h)
+                        active = _is_active_nonblack_frame(frame)
+                        res_label = (
+                            f"{raw_w}x{raw_h}"
+                            if (raw_w, raw_h) == (out_w, out_h)
+                            else f"{raw_w}x{raw_h} -> {out_w}x{out_h}"
+                        )
+                        status_tag = "Active stream" if active else "Standby frame"
                         cameras.append({
                             "index": idx,
                             "name": dev_name,
@@ -291,7 +601,7 @@ def scan_available_cameras(max_index: int = 4) -> dict:
                             "status_tag": status_tag,
                         })
                         break
-                    time.sleep(0.04)
+                    time.sleep(0.06)
         except Exception:
             pass
         finally:
@@ -307,9 +617,9 @@ def scan_available_cameras(max_index: int = 4) -> dict:
 
 
 class ThreadedWebcam:
-    """실시간 웹캠 및 GoPro 프레임 캡처 백그라운드 스레드 (프록시 우회 + 고화질 프레임 자동 다운스케일링 내장)"""
+    """DirectShow GoPro Webcam(FFmpeg 파이프 포함)과 USB UDP 스트림을 백그라운드 스레드로 읽는 캡처 클래스."""
 
-    def __init__(self, cam_idx=2, max_width=DEFAULT_MAX_CAMERA_WIDTH, max_height=DEFAULT_MAX_CAMERA_HEIGHT):
+    def __init__(self, cam_idx=1, max_width=DEFAULT_MAX_CAMERA_WIDTH, max_height=DEFAULT_MAX_CAMERA_HEIGHT):
         configure_local_and_gopro_no_proxy()
         self.cap = None
         self.active_cam_idx = cam_idx
@@ -319,169 +629,124 @@ class ThreadedWebcam:
         self.output_resolution = (0, 0)
         self.gopro_ip = detect_gopro_usb_ip()
         self._using_direct_udp = False
-
-        if self.gopro_ip:
-            status = query_gopro_usb_status(self.gopro_ip, timeout=0.8)
-            print(f"[CAMERA] GoPro USB interface detected at {self.gopro_ip} (status={status})", flush=True)
+        self.stream_type = ""
 
         dshow_devices = list_dshow_video_devices()
         dev_by_idx = {d["index"]: d for d in dshow_devices}
+        gopro_dshow_idx = next((d["index"] for d in dshow_devices if d["is_gopro"] and d["kind"] == "video"), None)
 
-        # 만약 사용자가 선택한 cam_idx가 (none) 비활성 장치이거나 더미 가상 카메라(OMEN Cam 등)이고,
-        # 실제 GoPro Webcam이 다른 인덱스에 존재한다면 GoPro 인덱스를 최우선으로 시도하여 'error = 0' 스팸 방지
-        preferred_gopro_idx = next((d["index"] for d in dshow_devices if d["is_gopro"] and d["kind"] == "video"), None)
-        requested_dev = dev_by_idx.get(cam_idx)
-        if preferred_gopro_idx is not None and requested_dev and (requested_dev["kind"] == "none" or requested_dev["is_dummy_virtual"]):
-            print(
-                f"[CAMERA] Index {cam_idx} ('{requested_dev['name']}') is inactive/virtual; "
-                f"auto-selecting GoPro Webcam at index {preferred_gopro_idx}",
-                flush=True,
-            )
-            candidate_indices = [preferred_gopro_idx, cam_idx]
-        else:
-            candidate_indices = [cam_idx]
-            if preferred_gopro_idx is not None and preferred_gopro_idx not in candidate_indices:
-                candidate_indices.append(preferred_gopro_idx)
+        print("[CAMERA] Connecting video input...", flush=True)
 
-        for fallback_idx in (2, 1, 0):
-            if fallback_idx not in candidate_indices and cam_idx >= 0:
-                fb_dev = dev_by_idx.get(fallback_idx)
-                if fb_dev and (fb_dev["kind"] == "none" or fb_dev["is_dummy_virtual"]):
-                    continue
-                candidate_indices.append(fallback_idx)
-
-        fallback_black_candidate = None
-
-        # 1단계: DirectShow 기본 스트림으로 즉시 연결 (cap.set(FOURCC/WIDTH/HEIGHT)으로 인한 7초 블로킹 및 드라이버 오류 방지)
-        for target_idx in candidate_indices:
-            if target_idx < 0:
-                continue
-            dev_info = dev_by_idx.get(target_idx)
-            if dev_info and dev_info["kind"] == "none":
-                continue
-            dev_name = dev_info["name"] if dev_info else f"Camera {target_idx}"
-
-            for backend, backend_name in ((cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF")):
-                cap = cv2.VideoCapture(target_idx, backend)
-                keep_open = False
-                try:
-                    if not cap.isOpened():
-                        continue
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    max_retries = 15 if target_idx == candidate_indices[0] else 8
+        # ---------------------------------------------------------
+        # Strategy 1: DirectShow 'GoPro Webcam' (FFmpeg 파이프 우선) 또는 지정 카메라
+        # ---------------------------------------------------------
+        target_dshow_idx = gopro_dshow_idx if gopro_dshow_idx is not None else cam_idx
+        if target_dshow_idx in dev_by_idx and dev_by_idx[target_dshow_idx]["kind"] == "video":
+            dev_info = dev_by_idx[target_dshow_idx]
+            dev_name = dev_info["name"]
+            if dev_info["is_gopro"] and _find_ffmpeg_exe():
+                # 1080p 이상 요청 시 1920x1080, 그 외에는 GoPro 네이티브 1280x720으로 수신 후 필요 시 다운스케일
+                cap_w, cap_h = (
+                    (1920, 1080)
+                    if (self.max_width > DEFAULT_MAX_CAMERA_WIDTH or self.max_height > DEFAULT_MAX_CAMERA_HEIGHT)
+                    else (DEFAULT_MAX_CAMERA_WIDTH, DEFAULT_MAX_CAMERA_HEIGHT)
+                )
+                temp_cap = open_ffmpeg_dshow_camera(
+                    dev_name,
+                    width=cap_w,
+                    height=cap_h,
+                    startup_timeout=5.0,
+                    log_prefix="[CAMERA]",
+                )
+                if temp_cap is not None:
+                    grabbed, raw_frame = temp_cap.read()
+                    if self._valid_frame(grabbed, raw_frame):
+                        self._assign_initial_stream(
+                            temp_cap,
+                            target_dshow_idx,
+                            f"FFmpeg DirectShow ({dev_name})",
+                            raw_frame,
+                        )
+                    else:
+                        temp_cap.release()
+            else:
+                print(f"[CAMERA] Attempting DirectShow '{dev_name}' (index {target_dshow_idx})...", flush=True)
+                temp_cap = cv2.VideoCapture(target_dshow_idx, cv2.CAP_DSHOW)
+                if temp_cap.isOpened():
+                    temp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     got_valid = False
-                    for _ in range(max_retries):
-                        grabbed, raw_frame = cap.read()
+                    for i in range(25):
+                        grabbed, raw_frame = temp_cap.read()
                         if self._valid_frame(grabbed, raw_frame):
-                            got_valid = True
-                            if _is_active_nonblack_frame(raw_frame):
-                                raw_h, raw_w = raw_frame.shape[:2]
-                                frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
-                                out_h, out_w = frame.shape[:2]
-                                self.raw_resolution = (raw_w, raw_h)
-                                self.output_resolution = (out_w, out_h)
-                                self.active_cam_idx = target_idx
-                                scale_note = (
-                                    f" -> auto-downscaled to {out_w}x{out_h}"
-                                    if (raw_w, raw_h) != (out_w, out_h)
-                                    else ""
+                            if _is_active_nonblack_frame(raw_frame) or i > 15:
+                                got_valid = True
+                                self._assign_initial_stream(
+                                    temp_cap,
+                                    target_dshow_idx,
+                                    f"DirectShow ({dev_name})",
+                                    raw_frame,
                                 )
-                                print(
-                                    f"[CAMERA] Connected to [{target_idx}] '{dev_name}' "
-                                    f"(input={raw_w}x{raw_h}{scale_note}, backend={backend_name})",
-                                    flush=True,
-                                )
-                                self.cap, self.grabbed, self.frame = cap, grabbed, frame
-                                self._raw_frame = raw_frame
-                                keep_open = True
                                 break
-                        time.sleep(0.06)
+                        time.sleep(0.1)
+                    if not got_valid:
+                        temp_cap.release()
 
-                    if self.cap is None and got_valid and fallback_black_candidate is None:
-                        fallback_black_candidate = (target_idx, backend, backend_name, dev_name)
-
-                    # DSHOW에서 이미 장치가 열렸다면 동일 인덱스에 대해 느린 MSMF를 중복 시도하지 않음
-                    break
-                except cv2.error as exc:
-                    print(f"[WARN][CAMERA] index={target_idx} backend={backend_name} failed: {exc}", flush=True)
-                finally:
-                    if not keep_open:
-                        cap.release()
-                if self.cap is not None:
-                    break
-            if self.cap is not None:
-                break
-
-        # 다른 활성 카메라가 없고 검은 화면 카메라만 열렸다면 해당 카메라라도 연결 유지
-        if self.cap is None and fallback_black_candidate is not None:
-            fb_idx, fb_backend, fb_name, fb_dev_name = fallback_black_candidate
-            cap = cv2.VideoCapture(fb_idx, fb_backend)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                grabbed, raw_frame = cap.read()
-                if self._valid_frame(grabbed, raw_frame):
-                    raw_h, raw_w = raw_frame.shape[:2]
-                    frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
-                    out_h, out_w = frame.shape[:2]
-                    self.raw_resolution = (raw_w, raw_h)
-                    self.output_resolution = (out_w, out_h)
-                    self.active_cam_idx = fb_idx
-                    print(
-                        f"[CAMERA] Opened [{fb_idx}] '{fb_dev_name}' ({raw_w}x{raw_h} -> {out_w}x{out_h}, standby/dark frame)",
-                        flush=True,
-                    )
-                    self.cap, self.grabbed, self.frame = cap, grabbed, frame
-                    self._raw_frame = raw_frame
-                else:
-                    cap.release()
-
-        # 2단계: DirectShow 웹캠 열기가 실패했으나 GoPro USB(172.2X.1XX.51)가 감지된 경우 UDP 직접 스트림 시도
+        # ---------------------------------------------------------
+        # 2차 시도: DirectShow 연결이 안 되면 GoPro USB UDP 스트림을 직접 연다
+        # ---------------------------------------------------------
         if self.cap is None and self.gopro_ip:
             target_res = "480" if self.max_height < 720 else "720"
-            print(
-                f"[CAMERA] DirectShow open failed; attempting direct GoPro USB {target_res}p stream from {self.gopro_ip}...",
-                flush=True,
-            )
+            print(f"[CAMERA] Attempting direct GoPro USB {target_res}p stream from {self.gopro_ip}...", flush=True)
             if start_gopro_usb_webcam(self.gopro_ip, res=target_res, fov="4"):
                 udp_url = "udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=50000000"
-                cap = cv2.VideoCapture(udp_url, cv2.CAP_FFMPEG)
-                try:
-                    if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        for _ in range(30):
-                            grabbed, raw_frame = cap.read()
+                temp_cap = cv2.VideoCapture(udp_url, cv2.CAP_FFMPEG)
+                if temp_cap.isOpened():
+                    temp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    for _ in range(30):
+                        grabbed, raw_frame = temp_cap.read()
+                        if self._valid_frame(grabbed, raw_frame):
+                            self._assign_initial_stream(
+                                temp_cap,
+                                cam_idx,
+                                f"Direct USB UDP ({self.gopro_ip})",
+                                raw_frame,
+                                using_direct_udp=True,
+                            )
+                            break
+                        time.sleep(0.1)
+                    if self.cap is None:
+                        temp_cap.release()
+
+        # ---------------------------------------------------------
+        # Strategy 3: Fallback to any active non-dummy webcam
+        # ---------------------------------------------------------
+        if self.cap is None:
+            print("[CAMERA] Falling back to any available active video device...", flush=True)
+            for dev in dshow_devices:
+                if dev["kind"] == "video" and not dev["is_dummy_virtual"] and not dev["is_gopro"]:
+                    idx = dev["index"]
+                    temp_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                    if temp_cap.isOpened():
+                        temp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        for _ in range(10):
+                            grabbed, raw_frame = temp_cap.read()
                             if self._valid_frame(grabbed, raw_frame):
-                                raw_h, raw_w = raw_frame.shape[:2]
-                                frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
-                                out_h, out_w = frame.shape[:2]
-                                self.raw_resolution = (raw_w, raw_h)
-                                self.output_resolution = (out_w, out_h)
-                                print(
-                                    f"[CAMERA] GoPro Direct USB UDP stream initialized: input={raw_w}x{raw_h} -> output={out_w}x{out_h}",
-                                    flush=True,
+                                self._assign_initial_stream(
+                                    temp_cap,
+                                    idx,
+                                    f"Webcam ({dev['name']})",
+                                    raw_frame,
                                 )
-                                self.cap, self.grabbed, self.frame = cap, grabbed, frame
-                                self._raw_frame = raw_frame
-                                self._using_direct_udp = True
                                 break
-                            time.sleep(0.1)
-                except cv2.error as exc:
-                    print(f"[WARN][CAMERA] GoPro Direct UDP failed: {exc}", flush=True)
-                finally:
-                    if self.cap is not cap:
-                        cap.release()
+                            time.sleep(0.06)
+                        if self.cap is not None:
+                            break
+                        temp_cap.release()
 
         if self.cap is None:
-            gopro_hint = (
-                f" (감지된 GoPro USB IP: {self.gopro_ip} — Windows 방화벽에서 UDP 8554 허용 여부 또는 GoPro Webcam 앱 점유를 확인하세요)"
-                if self.gopro_ip
-                else ""
-            )
             raise RuntimeError(
-                f"카메라 {cam_idx}에서 영상을 읽을 수 없습니다.{gopro_hint} "
-                "GoPro Webcam 앱 트레이 아이콘에 파란색 불이 켜져 있는지, "
-                "다른 앱(Zoom/OBS/미리보기)이 카메라를 점유하고 있지 않은지, "
-                "카메라 인덱스 번호(cam_idx=0, 1, 2)를 확인해 주세요."
+                f"Failed to open video stream from camera (cam_idx={cam_idx}, gopro_ip={self.gopro_ip}). "
+                "Please verify that GoPro USB is connected, GoPro Webcam utility is running, and no other app is using the camera."
             )
 
         self.captured_at = time.perf_counter()
@@ -492,9 +757,32 @@ class ThreadedWebcam:
         self.started = False
         self.read_lock = threading.Lock()
 
+    def _assign_initial_stream(
+        self,
+        cap,
+        active_cam_idx: int,
+        stream_type: str,
+        raw_frame: np.ndarray,
+        using_direct_udp: bool = False,
+    ) -> None:
+        """첫 유효 프레임 수신 시 해상도와 초기 스트림 상태를 설정한다."""
+        self.cap = cap
+        self.active_cam_idx = active_cam_idx
+        self.stream_type = stream_type
+        self._using_direct_udp = using_direct_udp
+        raw_h, raw_w = raw_frame.shape[:2]
+        frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
+        out_h, out_w = frame.shape[:2]
+        self.raw_resolution = (raw_w, raw_h)
+        self.output_resolution = (out_w, out_h)
+        self.grabbed = True
+        self.frame = frame
+        self._raw_frame = raw_frame
+        print(f"[CAMERA] Connected via {stream_type}: {raw_w}x{raw_h} -> {out_w}x{out_h}", flush=True)
+
     @staticmethod
     def _valid_frame(grabbed, frame):
-        """수신된 3채널 이미지 유효성 확인"""
+        """3채널 컬러 영상 프레임이 정상적으로 읽혔는지 확인한다."""
         return (
             grabbed
             and isinstance(frame, np.ndarray)
@@ -505,7 +793,7 @@ class ThreadedWebcam:
         )
 
     def start(self):
-        """캡처 워커 스레드 시작"""
+        """백그라운드 프레임 읽기 스레드를 시작한다."""
         if self.started:
             return self
         self.started = True
@@ -513,49 +801,51 @@ class ThreadedWebcam:
         self.thread.start()
         return self
 
-    # camera.py의 update() 수정[cite: 1]
     def update(self):
-        """최신 프레임 지속 갱신 루프 (밀림 방지: 캡처 스레드에서는 버퍼 비우기만 수행하고, 다운스케일은 소비 시점에 프레임당 1회만 수행)"""
-        while self.started: #[cite: 1]
-            try: #[cite: 1]
-                grabbed, raw_frame = self.cap.read() #[cite: 1]
-            except cv2.error as exc: #[cite: 1]
-                with self.read_lock: #[cite: 1]
-                    self._capture_error = str(exc) #[cite: 1]
-                break #[cite: 1]
+        """카메라에서 최신 프레임을 계속 읽어 내부 버퍼를 갱신한다."""
+        while self.started:
+            try:
+                grabbed, raw_frame = self.cap.read()
+            except cv2.error as exc:
+                with self.read_lock:
+                    self._capture_error = str(exc)
+                break
 
-            if not grabbed: #[cite: 1]
-                time.sleep(0.005) #[cite: 1]
+            if not grabbed or raw_frame is None:
+                if hasattr(self.cap, "isOpened") and not self.cap.isOpened():
+                    with self.read_lock:
+                        self._capture_error = "Camera stream closed unexpectedly."
+                    break
+                time.sleep(0.005)
                 continue
 
-            captured_at = time.perf_counter() #[cite: 1]
+            captured_at = time.perf_counter()
 
-            with self.read_lock: #[cite: 1]
-                self.grabbed = grabbed #[cite: 1]
-                self._raw_frame = raw_frame #[cite: 1]
-                self.captured_at = captured_at #[cite: 1]
-                self.frame_id += 1 #[cite: 1]
-                self._last_valid_at = captured_at #[cite: 1]
+            with self.read_lock:
+                self.grabbed = grabbed
+                self._raw_frame = raw_frame
+                self.captured_at = captured_at
+                self.frame_id += 1
+                self._last_valid_at = captured_at
 
-            # time.sleep을 줄이거나 없애서 OS 드라이버의 내부 캡처 버퍼를 비워냅니다.
             time.sleep(0.001)
 
     def read(self):
+        """다운스케일된 최신 프레임과 성공 여부만 간단히 반환한다."""
         grabbed, frame, _, _ = self.read_sample()
         return grabbed, frame
 
     def read_sample(self):
-        """프레임 복사본(최대 해상도 이하로 자동 축소 캐싱됨), 타임스탬프, 프레임 ID를 원자적으로 추출"""
+        """다운스케일된 프레임 복사본, 캡처 시각, 프레임 번호를 스레드 안전하게 반환한다."""
         with self.read_lock:
             if self._capture_error:
-                raise RuntimeError(f"카메라 프레임 읽기 실패: {self._capture_error}")
+                raise RuntimeError(f"Camera frame capture error: {self._capture_error}")
             raw_frame = getattr(self, "_raw_frame", self.frame)
             if not self.grabbed or raw_frame is None:
                 if time.perf_counter() - self._last_valid_at >= 5.0:
-                    raise RuntimeError("카메라 영상이 5초 이상 끊겼습니다. GoPro USB 연결 상태를 확인해 주세요.")
+                    raise RuntimeError("Camera feed interrupted for >5s. Check GoPro USB connection.")
                 return False, None, self.captured_at, self.frame_id
 
-            # 새 프레임이 소비될 때만 다운스케일을 1회 수행하고 캐싱 (60fps 캡처 중 버려지는 프레임에는 CPU 리사이즈 생략)
             if self._scaled_frame_id != self.frame_id or self.frame is None:
                 self.frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
                 self._scaled_frame_id = self.frame_id
@@ -564,7 +854,13 @@ class ThreadedWebcam:
 
     def stop(self):
         self.started = False
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
+        thread = getattr(self, "thread", None)
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+        if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+            thread.join(timeout=1.5)
         if getattr(self, "_using_direct_udp", False) and getattr(self, "gopro_ip", None):
             stop_gopro_usb_webcam(self.gopro_ip)

@@ -17,7 +17,7 @@ QUALITY_CODES = {'PERFECT': 3, 'GOOD': 2, 'BAD': 1}
 
 class SideFSM:
     def __init__(self, side_name: str, motion_direction: str, thresholds: dict, target_reps: int = 10,
-                 target_score=None, scoring=True, min_activation_ratio=.40, return_ratio=.30):
+                 target_score=None, scoring=True, min_activation_ratio=.40, return_ratio=.30, reversal_ratio=.05):
         self.side = side_name
         if not math.isfinite(min_activation_ratio) or not 0 < min_activation_ratio <= 1:
             raise ValueError('min_activation_ratio must be between 0 and 1')
@@ -25,6 +25,9 @@ class SideFSM:
         if not math.isfinite(return_ratio) or not 0 <= return_ratio < min_activation_ratio:
             raise ValueError('return_ratio must be below min_activation_ratio')
         self.return_ratio = return_ratio
+        if not math.isfinite(reversal_ratio) or not 0 <= reversal_ratio <= 1:
+            raise ValueError('reversal_ratio must be between 0 and 1')
+        self.reversal_ratio = float(reversal_ratio)
         self.is_decreasing = (motion_direction == "DECREASING")
         self.target_reps = target_reps
 
@@ -143,9 +146,9 @@ class SideFSM:
             min_activation_threshold = self.min_activation_ratio
             has_reached_threshold = (peak_range / val_range + 1e-9 >= min_activation_threshold) if val_range > 0 else False
 
-            # 변곡점 판정: 정점 대비 5% 이상 확실히 되돌아 내려왔는지 확인 (노이즈 방지)
+            # 변곡점 판정: 정점 대비 설정 비율(기본 5%) 이상 확실히 되돌아 내려왔는지 확인 (노이즈 방지)
             # 전체 기준 범위의 5%를 방향 전환 확인 폭으로 사용합니다. 최고점 도달 직후 작은 잡음으로 반복을 확정하지 않게 합니다.
-            reversal_delta = 0.05 * val_range
+            reversal_delta = self.reversal_ratio * val_range
             turned_down = has_reached_threshold and ((peak_range - current_range) >= reversal_delta)
 
             # 조기 카운트 방지: 올라가는 도중엔 카운트하지 않고 변곡점(하강)을 통과할 때만 카운트
@@ -218,19 +221,22 @@ class MotionEngine:
         self.threshold_version = 0
         self.mode = mode
         cfg = config.get('eval_config', {})
-        aliases = {'RELATIVE_Y': 'COORDINATE', 'ANKLE_HEIGHT': 'COORDINATE', 'DISTANCE': 'LENGTH'}
+        aliases = {'RELATIVE_Y': 'COORDINATE', 'ANKLE_HEIGHT': 'COORDINATE', 'DISTANCE': 'LENGTH', 'UNNORM_COORDINATE': 'RAW_COORDINATE'}
         self.metric_type = aliases.get(cfg.get('metric_type'), cfg.get('metric_type', 'ANGLE'))
-        if self.metric_type not in {'ANGLE', 'COORDINATE', 'LENGTH'}:
-            raise ValueError('metric_type must be ANGLE, COORDINATE or LENGTH')
-        self.use_normalization = cfg.get('use_normalization', True)
+        if self.metric_type not in {'ANGLE', 'COORDINATE', 'RAW_COORDINATE', 'LENGTH'}:
+            raise ValueError('metric_type must be ANGLE, COORDINATE, RAW_COORDINATE or LENGTH')
+        default_norm = False if self.metric_type == 'RAW_COORDINATE' else True
+        self.use_normalization = cfg.get('use_normalization', default_norm)
         if type(self.use_normalization) is not bool:
             raise ValueError('use_normalization must be true or false')
+        if self.metric_type == 'RAW_COORDINATE' and self.use_normalization:
+            raise ValueError('RAW_COORDINATE requires use_normalization=false')
         self.coordinate_unit = cfg.get('coordinate_unit', 'image')
         if self.coordinate_unit not in {'image', 'pixel'}:
             raise ValueError('coordinate_unit must be image or pixel')
-        if self.coordinate_unit == 'pixel' and (self.metric_type != 'COORDINATE' or self.use_normalization):
-            raise ValueError('Pixel coordinates require COORDINATE and use_normalization=false')
-        self.motion_direction = cfg.get('motion_direction', 'INCREASING')
+        if self.coordinate_unit == 'pixel' and (self.metric_type not in {'COORDINATE', 'RAW_COORDINATE'} or self.use_normalization):
+            raise ValueError('Pixel coordinates require COORDINATE/RAW_COORDINATE and use_normalization=false')
+        self.motion_direction = cfg.get('motion_direction', 'DECREASING' if self.metric_type == 'RAW_COORDINATE' else 'INCREASING')
         self.counting_method = cfg.get('counting_method', 'PEAK_REVERSAL')
         if self.counting_method not in {'PEAK_REVERSAL', 'TARGET_POSITION'}:
             raise ValueError('Unsupported counting_method')
@@ -244,21 +250,25 @@ class MotionEngine:
                 if saved.get('use_normalization', True) != self.use_normalization:
                     raise ValueError('Normalization changed; run CALIBRATION again before MAIN')
                 tag = saved.get('metric_type')
-                if (tag is not None or cfg.get('reference_kpt') or self.metric_type == 'LENGTH') and aliases.get(tag, tag) != self.metric_type:
-                    raise ValueError('Measurement metric changed; run CALIBRATION again before MAIN')
-            if self.metric_type == 'COORDINATE':
+                if tag is not None:
+                    norm_tag = aliases.get(tag, tag)
+                    if norm_tag != self.metric_type and not ({norm_tag, self.metric_type} <= {'COORDINATE', 'RAW_COORDINATE'} and not self.use_normalization):
+                        raise ValueError('Measurement metric changed; run CALIBRATION again before MAIN')
+            if self.metric_type in {'COORDINATE', 'RAW_COORDINATE'}:
                 if cfg.get('axis', 'y') not in ('x', 'y'):
                     raise ValueError('COORDINATE axis must be x or y')
-                for field in ('target_kpt', 'reference_kpt'):
-                    joint = cfg.get(field, {}).get(side)
-                    if joint is not None and (type(joint) is not int or not 0 <= joint < 17):
-                        raise ValueError(f'{field} must contain COCO joint IDs')
+                joint = cfg.get('target_kpt', {}).get(side)
+                if joint is None:
+                    pk = cfg.get('primary_kpts', {}).get(side, [])
+                    joint = pk[0] if isinstance(pk, list) and len(pk) == 1 else None
+                if joint is not None and (type(joint) is not int or not 0 <= joint < 17):
+                    raise ValueError('target_kpt/primary_kpts must contain COCO joint IDs')
                 if self.coordinate_unit == 'pixel':
-                    if cfg.get('target_kpt', {}).get(side) is None:
+                    if joint is None:
                         raise ValueError('Pixel coordinates require target_kpt')
                     if saved is not None:
                         signature = dict(coordinate_unit='pixel', axis=cfg.get('axis', 'y'),
-                            target_kpt=cfg['target_kpt'][side], reference_kpt=cfg.get('reference_kpt', {}).get(side))
+                            target_kpt=joint)
                         if any(saved.get(k) != v for k, v in signature.items()):
                             raise ValueError('Coordinate definition changed; run CALIBRATION again before MAIN')
                         size = saved.get('frame_size')
@@ -267,6 +277,14 @@ class MotionEngine:
                         if self.expected_frame_size is not None and self.expected_frame_size != size:
                             raise ValueError('Left/right calibration resolutions differ')
                         self.expected_frame_size = size
+            elif self.metric_type == 'LENGTH':
+                pair = cfg.get('primary_kpts', {}).get(side, [])
+                if not isinstance(pair, list) or len(pair) != 2 or any(type(j) is not int or not 0 <= j < 17 for j in pair):
+                    raise ValueError('LENGTH requires 2 COCO joint IDs in primary_kpts')
+            elif self.metric_type == 'ANGLE':
+                triplet = cfg.get('primary_kpts', {}).get(side, [])
+                if not isinstance(triplet, list) or len(triplet) != 3 or any(type(j) is not int or not 0 <= j < 17 for j in triplet):
+                    raise ValueError('ANGLE requires 3 COCO joint IDs in primary_kpts')
         if self.expected_frame_size is not None:
             self.frame_size = list(self.expected_frame_size)
         defaults = config.get('default_thresholds', {})
@@ -407,7 +425,8 @@ class MotionEngine:
             return None
         return points
 
-    # 설정된 세 관절로 가운데 관절의 각도를 계산합니다. 필요한 관절 신뢰도가 낮으면 None입니다.
+    # 정해진 3가지 측정 방식(ANGLE / COORDINATE / LENGTH) 중 설정(eval_config.metric_type)에 지정된 방식을 호출합니다.
+    # 1) ANGLE: 설정된 세 관절(primary_kpts)로 가운데 관절의 각도를 계산합니다.
     def _compute_angle(self, side, kpt_map):
         ids = self.config.get('eval_config', {}).get('primary_kpts', {}).get(side, [])
         points = self._valid_points(ids, kpt_map, .4)
@@ -415,32 +434,27 @@ class MotionEngine:
             return self._calculate_angle(*points)
         return None
 
-    # 설정 축의 관절 위치를 구합니다. 기준 관절이 지정되어 있으면 두 관절 사이의 좌표 차이를 사용합니다.
+    # 2) COORDINATE: 설정된 단일 대상 관절(target_kpt)의 Y좌표(또는 설정 축 axis) 위치를 구합니다.
     def _compute_coordinate(self, side, kpt_map):
         cfg = self.config.get('eval_config', {})
         axis = cfg.get('axis', 'y')
         if axis not in ('x', 'y'):
             raise ValueError('COORDINATE axis must be x or y')
         target = cfg.get('target_kpt', {}).get(side)
-        reference = cfg.get('reference_kpt', {}).get(side)
-        # 기존 두 관절 입력은 첫 점을 기준 관절, 둘째 점을 대상 관절로 해석합니다.
         if target is None:
-            pair = cfg.get('primary_kpts', {}).get(side, [])
-            if len(pair) != 2:
-                return None
-            reference, target = pair
-        points = self._valid_points([target] + ([reference] if reference is not None else []), kpt_map)
+            pts = cfg.get('primary_kpts', {}).get(side, [])
+            target = pts[0] if len(pts) == 1 else None
+        points = self._valid_points([target] if target is not None else [], kpt_map)
         if not points:
             return None
-        return round(float(points[0][axis] - (points[1][axis] if reference is not None else 0.)), 4)
+        return round(float(points[0][axis]), 4)
 
-    # 신체 정규화 좌표에서 두 관절의 유클리드 거리를 구합니다. 픽셀·cm 단위가 아닙니다.
+    # 3) LENGTH: 설정된 두 관절(primary_kpts) 사이의 2D 유클리드 길이를 구합니다.
     def _compute_length(self, side, kpt_map):
         ids = self.config.get('eval_config', {}).get('primary_kpts', {}).get(side, [])
         points = self._valid_points(ids, kpt_map)
         if points and len(points) == 2:
-            # 입력 좌표는 이미 PoseNormalizer로 신체 정규화를 마친 상태입니다.
-            return round(math.hypot(points[1]['x']-points[0]['x'], points[1]['y']-points[0]['y']), 4)
+            return round(math.hypot(points[1]['x'] - points[0]['x'], points[1]['y'] - points[0]['y']), 4)
         return None
 
     @staticmethod
@@ -453,17 +467,7 @@ class MotionEngine:
         """JSON 설정(posture_constraints)에 정의된 추가 자세 제약 조건을 검증합니다."""
         constraints = self.posture_constraints
         if not constraints:
-            # 기존 레거시 설정(JSON에 posture_constraints가 미정의된 경우) 호환
-            if self.exercise_name == 'shoulder_press':
-                constraints = [{
-                    'type': 'RELATIVE_POSITION',
-                    'target_kpt': {'left': 9, 'right': 10},
-                    'reference_kpt': {'left': 5, 'right': 6},
-                    'axis': 'y',
-                    'relation': 'ABOVE'
-                }]
-            else:
-                return True
+            return True
 
         for c in constraints:
             c_type = str(c.get('type', 'RELATIVE_POSITION')).upper()
@@ -536,7 +540,7 @@ class MotionEngine:
 
     def _compute_side_value(self, side: str, kpt_map: dict):
         return {'ANGLE': self._compute_angle, 'COORDINATE': self._compute_coordinate,
-                'LENGTH': self._compute_length}[self.metric_type](side, kpt_map)
+                'RAW_COORDINATE': self._compute_coordinate, 'LENGTH': self._compute_length}[self.metric_type](side, kpt_map)
 
     # 관절 ID별 조회 표를 만든 뒤 좌우 측정값과 각 상태 기계의 반복·품질 결과를 함께 반환합니다.
     def process_keypoints(self, keypoints: list, now=None) -> dict:

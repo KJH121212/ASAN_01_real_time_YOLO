@@ -1,4 +1,4 @@
-"""Keep camera preview independent of inference, calibration and session completion."""
+"""추론·캘리브레이션·세션 종료와 별개로 카메라 미리보기 영상을 계속 보내는 모듈."""
 
 import asyncio
 import json
@@ -12,6 +12,7 @@ from network.session_commands import available_output_modes
 
 
 async def watch_camera(server, websocket, packet):
+    """연결된 카메라 프레임을 주기적으로 읽어 오버레이 JPEG로 인코딩한 뒤 웹소켓으로 전송한다."""
     if 'VISUAL' not in available_output_modes():
         await websocket.send(json.dumps({'type': 'PREVIEW_STATUS', 'warning': '영상 미리보기가 비활성화되어 있습니다.'}))
         return
@@ -31,7 +32,7 @@ async def watch_camera(server, websocket, packet):
                 ok, frame, captured_at, _ = server.camera.read_sample()
                 if not ok:
                     raise RuntimeError('카메라에서 영상을 받지 못하고 있습니다. 연결을 확인해 주세요.')
-                if time.perf_counter()-captured_at > 2.:
+                if time.perf_counter()-captured_at > 4.:
                     raise RuntimeError('카메라 영상 갱신이 중단되었습니다. 연결을 복구하고 있습니다.')
                 camera_failed = False
                 pose = dict(server._preview_pose)
@@ -49,7 +50,8 @@ async def watch_camera(server, websocket, packet):
                     notice = '측정이 진행 중이 아닙니다. 현재 카메라 영상만 표시합니다.'
                 elif server._measurement_ready_at and time.perf_counter() < server._measurement_ready_at:
                     hide_measurement = True
-                    notice = '측정 준비 중입니다. 기본 자세를 취해 주세요.'
+                    remaining_sec = max(1, int(math.ceil(server._measurement_ready_at - time.perf_counter())))
+                    notice = f'측정 준비 중입니다 ({remaining_sec}초). 기본 자세를 취해 주세요.'
                 elif time.perf_counter()-server._preview_updated_at > 1.:
                     hide_measurement = True
                     warning = '측정 결과를 기다리고 있습니다. 카메라를 향해 자세를 유지해 주세요.'
@@ -73,7 +75,7 @@ async def watch_camera(server, websocket, packet):
                 raise
             except Exception as exc:
                 await websocket.send(json.dumps({'type': 'PREVIEW_STATUS', 'warning': str(exc)}))
-                # Reopen a failed camera on the next attempt, retaining the last client image.
+                # 카메라 읽기에 실패하면 다음 시도에서 다시 열 수 있도록 기존 연결을 정리한다
                 if camera_failed:
                     with server._camera_lock:
                         if server.camera:
@@ -89,6 +91,7 @@ async def watch_camera(server, websocket, packet):
 
 
 def missing_joints(server, keypoints):
+    """현재 운동 평가에 꼭 필요한 관절이 화면에서 빠졌는지 확인한다."""
     if server.controller is None:
         return False
     engine = server.controller.motion_engine

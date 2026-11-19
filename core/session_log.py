@@ -34,6 +34,7 @@ FRAME_FIELDS = [
 
 
 def default_log_root():
+    """세션 로그가 저장될 기본 루트(data) 폴더 경로를 반환한다."""
     configured = os.environ.get('ASAN_LOG_ROOT')
     if configured:
         return Path(configured).expanduser().resolve()
@@ -43,6 +44,7 @@ def default_log_root():
 
 
 def path_component(value, name):
+    """파일·폴더 이름에 안전한 문자만 들어있는지 검사한다."""
     value = str(value)
     if not re.fullmatch(r'[A-Za-z0-9_-]+', value) or Path(value).is_reserved():
         raise ValueError(f'{name} must contain only letters, numbers, underscores or hyphens')
@@ -50,12 +52,14 @@ def path_component(value, name):
 
 
 def sequence_number(value, name):
+    """회차/라운드/세트 번호가 0 이상의 정수인지 검사한다."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f'{name} must be a nonnegative integer')
     return value
 
 
 def write_json_atomic(path, data):
+    """임시 파일에 먼저 쓰고 교체해 JSON 저장 중 파일 깨짐을 막는다."""
     temporary = path.with_name(path.name + f'.{uuid.uuid4().hex}.tmp')
     try:
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -65,10 +69,12 @@ def write_json_atomic(path, data):
 
 
 class SessionLog:
+    """한 운동 세션의 CSV, NPZ, MP4 파일을 생성하고 프레임·요약 데이터를 기록하는 클래스."""
+
     def __init__(self, patient_dir, exercise_name, mode, session=None, round_number=1,
                  set_number=1, record_video=False, video_fps=30.0, started_at=None, target_score=None,
                  *, play_session_id=None, exercise_record_id=None, slot=1, patient_id=None,
-                 data_version=DEFAULT_DATA_VERSION, registration='01'):
+                 data_version=DEFAULT_DATA_VERSION, registration='01', filename_stem=None):
         self.patient_dir = Path(patient_dir)
         self.exercise_name = path_component(exercise_name, 'exercise_name')
         if mode not in {'CALIBRATION', 'MAIN'}:
@@ -98,9 +104,16 @@ class SessionLog:
         self.session = sequence_number(session, 'session')
         take = 1
         # 같은 세트 번호라도 라운드를 파일명에서 바로 구분합니다.
-        stem = f'{self.started_at:%H-%M-%S}_{mode}_round{self.round:02d}'
-        if mode == 'MAIN':
-            stem += f'_set{self.set:02d}'
+        if filename_stem is None:
+            stem = f'{self.started_at:%H-%M-%S}_{mode}_round{self.round:02d}'
+            if mode == 'MAIN':
+                stem += f'_set{self.set:02d}'
+        else:
+            stem = str(filename_stem)
+            if (not stem or stem in {'.', '..'} or Path(stem).name != stem
+                    or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem)
+                    or stem.endswith((' ', '.')) or Path(stem).is_reserved()):
+                raise ValueError('filename_stem must be a valid filename without an extension')
         while True:
             self.basename = stem if take == 1 else f'{stem}_take{take}'
             self.base = self.directory / self.basename
@@ -152,7 +165,7 @@ class SessionLog:
             self.info[f'{field}_relative'] = Path(path).relative_to(self.patient_dir).as_posix() if path else None
 
     def write_video_frame(self, frame, elapsed_sec):
-        """Resample capture timestamps onto the MP4 clock, independent of inference FPS."""
+        """AI 추론 속도와 무관하게 실제 경과 시간에 맞춰 MP4 프레임 간격을 채워 저장한다."""
         if not self.record_video:
             return -1
         if self._summary is not None:
@@ -194,6 +207,7 @@ class SessionLog:
     def append_frame(self, elapsed_sec, frame_idx, raw_keypoints, left, right, metric_type,
                      thresholds, threshold_version=0, is_occluded=False, calib_step='', video_frame_idx=-1,
                      use_normalization=None):
+        """프레임 1개 분량의 관절 좌표와 좌우 측정 결과를 CSV와 메모리 버퍼에 추가한다."""
         if self._summary is not None:
             raise RuntimeError('Session log is already closed')
         matrix = np.full((17, 3), np.nan, dtype=np.float32)
@@ -253,6 +267,7 @@ class SessionLog:
         self.score_deltas.append([0.0 if is_occluded else data.get('score_delta', 0.0) for data in (left, right)])
 
     def finish(self, rep_rows, status='COMPLETED', end_elapsed_sec=None):
+        """CSV·MP4 기록을 마무리하고 요약·반복 결과를 포함한 NPZ 파일을 저장한다."""
         if self._summary is not None:
             return dict(self._summary)
         if end_elapsed_sec is not None:

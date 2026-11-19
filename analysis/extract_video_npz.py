@@ -1,14 +1,13 @@
-"""Extract 2D pose keypoints and motion signals from video files to NPZ.
+"""녹화된 영상 파일에서 2D 관절 좌표와 운동 측정값을 추출해 NPZ/CSV로 저장하는 모듈.
 
-Performs batch pose estimation with SkeletonEngine without repetition counting,
-saving full-length keypoint trajectories and metric values in the exact standard
-ASAN format (DataManager & SessionLog under data/{patient}/{date}/{exercise}/).
+반복 횟수 카운트 없이 전체 프레임의 관절 궤적과 측정값만 뽑아
+표준 저장 구조(data/{환자ID}/{날짜}/{운동명}/)로 기록한다.
 
-Usage:
-    # Single video
+실행 예시:
+    # 단일 영상 처리
     python -m analysis.extract_video_npz --video data/test_video/261109/knee_extension/calibration.mp4 --exercise knee_extension
 
-    # Batch folder of videos
+    # 폴더 안의 모든 영상 일괄 처리
     python -m analysis.extract_video_npz --dir data/test_video/261109/knee_extension/ --exercise knee_extension
 """
 
@@ -38,7 +37,7 @@ KST = timezone(timedelta(hours=9))
 
 
 def detect_mode_round_set(video_path: Path, mode=None, round_number=None, set_number=None):
-    """Infer session mode, round, and set number from video filename if not specified."""
+    """파일명에 적힌 힌트(cali, round, set 등)로 모드·라운드·세트 번호를 자동 추론한다."""
     stem_lower = video_path.stem.lower()
 
     if mode is None:
@@ -77,6 +76,7 @@ def process_video_to_npz(
     engine = None,
     on_progress = None,
 ):
+    """영상 1개를 읽어 포즈 배치 추론 후 표준 NPZ와 CSV 파일로 저장한다."""
     video_path = Path(video_path)
     if not video_path.is_file():
         raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -113,11 +113,12 @@ def process_video_to_npz(
         print("  Initializing SkeletonEngine (YOLO + RTMPose)...")
         engine = SkeletonEngine()
 
-    # 3. MotionEngine & Normalizer initialization
+    # 3. MotionEngine & SessionController initialization (respecting exercise & mode!)
     config = load_exercise_config(exercise_name)
-    eval_cfg = config.get("eval_config", {})
-    motion_engine = MotionEngine(config=config, mode="CALIBRATION")
-    normalizer = PoseNormalizer(conf_threshold=0.35, invert_y=True)
+    from core.session_controller import SessionController
+    motion_engine = MotionEngine(config=config, mode=mode)
+    motion_engine.exercise_name = exercise_name
+    controller = SessionController(motion_engine=motion_engine)
     filter_engine = OneEuroKeypointFilter()
 
     # 4. Standard DataManager initialization (exact same saving structure)
@@ -128,6 +129,7 @@ def process_video_to_npz(
         round_number=round_number,
         set_number=set_number,
         video_fps=fps,
+        filename_stem=video_path.stem,
     )
 
     # 5. Extract all frames in batches
@@ -183,29 +185,12 @@ def process_video_to_npz(
         # Filter keypoints
         filtered_kpts = filter_engine.update(raw_kpts, timestamp=vtime) if raw_kpts else None
 
-        # Occlusion check
-        is_occluded = True
-        if filtered_kpts:
-            pts_dict = {p['id']: p for p in filtered_kpts}
-            req_joints = {5, 6, 11, 12}
-            for side in ('left', 'right'):
-                tgt = eval_cfg.get('target_kpt', {}).get(side)
-                ref = eval_cfg.get('reference_kpt', {}).get(side)
-                if tgt is not None:
-                    req_joints.add(tgt)
-                if ref is not None:
-                    req_joints.add(ref)
-            is_occluded = not all(j in pts_dict and pts_dict[j].get('score', 0) >= 0.35 for j in req_joints)
-
-        # Normalize keypoints
-        if filtered_kpts and not is_occluded:
-            normalized = normalizer.normalize(filtered_kpts)
-        else:
-            normalized = None
-
-        points_map = {p['id']: p for p in normalized} if normalized else {}
-        val_l = motion_engine._compute_side_value('left', points_map)
-        val_r = motion_engine._compute_side_value('right', points_map)
+        # Occlusion & coordinate space (normalized vs unnormalized per exercise/mode)
+        is_occluded = controller.check_occlusion(filtered_kpts) if filtered_kpts else True
+        measured_pts = controller.measurement_points(filtered_kpts) if (filtered_kpts and not is_occluded) else None
+        points_map = {p['id']: p for p in measured_pts} if measured_pts else {}
+        val_l = motion_engine._compute_side_value('left', points_map) if points_map else None
+        val_r = motion_engine._compute_side_value('right', points_map) if points_map else None
 
         left_data = {
             "val": val_l,
@@ -263,6 +248,7 @@ def process_video_to_npz(
 
 
 def main():
+    """CLI 인자를 받아 단일 영상 또는 폴더 전체의 NPZ 추출 작업을 실행한다."""
     parser = argparse.ArgumentParser(description="Extract video keypoints to standard ASAN NPZ without counting.")
     parser.add_argument("--video", "-v", type=str, default=None, help="Path to single video file")
     parser.add_argument("--dir", "-d", type=str, default=None, help="Directory containing video files")

@@ -1,4 +1,4 @@
-"""Session commands that can be tested without loading GPU models or a camera."""
+"""GPU 모델이나 카메라를 켜지 않고도 검증·테스트할 수 있는 세션 명령 처리 모음."""
 
 import math
 from importlib.util import find_spec
@@ -8,6 +8,7 @@ ENABLE_EXPERIMENTAL_MODES = True
 
 
 def available_output_modes():
+    """현재 서버에서 사용 가능한 출력 모드 목록을 반환한다."""
     if ENABLE_EXPERIMENTAL_MODES and find_spec('network.experimental_modes') is not None:
         return ('VISUAL', 'LIGHTWEIGHT', 'OFFLINE_VIDEO')
     return ('LIGHTWEIGHT',)
@@ -17,7 +18,7 @@ DEFAULT_PREPARATION_SECONDS = 5.0
 
 
 def resolve_output_mode(packet):
-    """세 가지 실행 방식과 기존 video_path 요청을 함께 지원합니다."""
+    """클라이언트 요청 패킷에서 출력 모드(VISUAL / LIGHTWEIGHT / OFFLINE_VIDEO)를 결정한다."""
     output = str(packet.get('output_mode', 'LIGHTWEIGHT')).upper()
     if output not in {'VISUAL', 'LIGHTWEIGHT', 'OFFLINE_VIDEO'}:
         raise ValueError('output_mode must be VISUAL, LIGHTWEIGHT or OFFLINE_VIDEO')
@@ -34,6 +35,7 @@ def resolve_output_mode(packet):
 
 
 def get_target_score(packet):
+    """목표 점수(target_score) 값을 꺼내 양의 유한수인지 검사한다."""
     value = packet.get('target_score', packet.get('target_reps', 10))
     if (isinstance(value, bool) or not isinstance(value, (int, float))
             or not math.isfinite(value) or value <= 0):
@@ -42,6 +44,7 @@ def get_target_score(packet):
 
 
 def get_target_reps(packet):
+    """목표 반복 횟수(target_reps)가 주어졌다면 양의 정수인지 검사한다."""
     value = packet.get('target_reps')
     if value is not None and (type(value) is not int or value <= 0):
         raise ValueError('target_reps must be a positive integer')
@@ -49,6 +52,7 @@ def get_target_reps(packet):
 
 
 def get_preparation_seconds(packet):
+    """측정 시작 전 준비 시간(초)을 꺼내 0 이상 유한수인지 검사한다."""
     value = packet.get('preparation_seconds', DEFAULT_PREPARATION_SECONDS)
     if (isinstance(value, bool) or not isinstance(value, (int, float))
             or not math.isfinite(value) or value < 0):
@@ -60,6 +64,7 @@ COUNT_THRESHOLD_COMMANDS = {"CMD_GET_COUNT_THRESHOLD", "CMD_UPDATE_COUNT_THRESHO
 
 
 def handle_count_threshold_command(controller, packet: dict) -> dict:
+    """실행 중인 세션의 카운트 기준값(임계값)을 조회하거나 수정한다."""
     request_id = packet.get("request_id")
 
     def error(code, message):

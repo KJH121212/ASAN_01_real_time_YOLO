@@ -1,7 +1,7 @@
-"""Streamlit controls for exporting NPZ measurements on MP4.
+"""NPZ 측정 기록을 원본 MP4 영상에 합성해 내보내는 Streamlit 화면 모듈.
 
-Automatically associates the video corresponding to the selected analysis log
-without requiring manual path input or re-uploading.
+선택한 로그와 짝이 맞는 원본 영상을 자동으로 찾아 주므로
+경로를 일일이 입력하거나 다시 업로드하지 않아도 된다.
 """
 
 from pathlib import Path
@@ -18,7 +18,7 @@ from analysis.video_overlay import export_video
 
 
 def find_associated_video(source_id: str, log: dict = None, table = None) -> Optional[Path]:
-    """Automatically find the video file corresponding to the selected log."""
+    """선택된 NPZ 로그와 짝이 맞는 원본 영상 파일을 여러 경로 단서로 자동 탐색한다."""
     ROOT = Path(__file__).resolve().parent.parent
     source_path = Path(source_id)
 
@@ -128,6 +128,7 @@ def find_associated_video(source_id: str, log: dict = None, table = None) -> Opt
 
 
 def video_panel(log, table, source_id):
+    """원본 영상 연동 상태 확인, 저장 옵션 설정, 오버레이 MP4 합성 실행 UI를 그린다."""
     st.caption('상단에서 선택한 로그(NPZ)와 원본 영상을 자동으로 연동하여 스켈레톤 및 실시간 측정값 오버레이 영상을 합성합니다.')
     if log is None:
         st.info('로그 열기에서 NPZ 파일을 선택하세요.')

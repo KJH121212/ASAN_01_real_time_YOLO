@@ -1,4 +1,4 @@
-"""Export recorded measurements on video, without running inference or recounting."""
+"""이미 저장된 NPZ·CSV 측정 기록을 재추론 없이 원본 영상 위에 입혀 MP4로 내보내는 모듈."""
 
 from pathlib import Path
 import os
@@ -15,7 +15,7 @@ from utils.pose_overlay import render_overlay
 
 
 def find_ffmpeg():
-    """Use PATH, the local analysis tools, or an installed imageio wheel."""
+    """PATH, 로컬 tools 폴더, imageio_ffmpeg 패키지 순으로 ffmpeg 실행 파일을 찾는다."""
     executable = shutil.which('ffmpeg')
     if executable:
         return executable
@@ -31,6 +31,7 @@ def find_ffmpeg():
 
 
 def export_video(video_path, log, output_path, table=None, offset=0., progress=None):
+    """원본 영상 프레임에 NPZ 관절 좌표·횟수·품질 오버레이를 그려 새 H.264 MP4로 저장한다."""
     video_path, output_path = Path(video_path).resolve(), Path(output_path).resolve()
     if output_path == video_path or output_path.exists():
         raise ValueError('원본 또는 기존 파일을 덮어쓸 수 없습니다. 새 출력 경로를 선택하세요.')
@@ -47,7 +48,7 @@ def export_video(video_path, log, output_path, table=None, offset=0., progress=N
                 values[column] = table[column].to_numpy()
     stored = info.get('measurement', {})
     method = stored.get('measurement', {}).get('count_on', '')
-    # Old NPZs may only contain score events. They cannot locate unscored calibration reps.
+    # 예전 NPZ에는 점수 변화량만 있어 점수가 없는 캘리브레이션 반복 위치는 표시할 수 없다
     for side in ('left', 'right'):
         if f'{side}_rep_count' not in values and f'{side}_score_delta' in values:
             events = pd.to_numeric(values[f'{side}_score_delta'], errors='coerce').fillna(0).gt(0)
