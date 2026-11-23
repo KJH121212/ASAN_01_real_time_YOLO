@@ -296,7 +296,7 @@
 
   <div class="nav-group">입력 백엔드</div>
   <a class="nav-link" href="#android-usb">3. Android USB (scrcpy)</a>
-  <a class="nav-link" href="#auto-rotate">4. 실시간 자동 회전 &amp; 방향 잠금</a>
+  <a class="nav-link" href="#auto-rotate">4. 통합 카메라 회전 (0°/90°/180°/270°)</a>
   <a class="nav-link" href="#gopro-dshow">5. GoPro &amp; DirectShow / IP</a>
 
   <div class="nav-group">미리보기 &amp; 프로토콜</div>
@@ -561,88 +561,43 @@
     </div>
   </section>
 
-  <!-- 4. 자동 회전 -->
+  <!-- 4. 통합 카메라 회전 -->
   <section id="auto-rotate" class="doc-section">
-    <h2>4. 실시간 자동 회전 감지 &amp; 세션 방향 잠금</h2>
+    <h2>4. 통합 카메라 회전 (<code>camera_rotation</code>: 0° / 90° / 180° / 270°)</h2>
     <p>
-      Android 카메라 센서는 물리적으로 가로(<code>1280×720</code>) 방향으로 고정되어 있어, 폰을 세로로 세워도
-      원본 H.264 스트림은 가로로 들어옵니다. <code>ScrcpyUsbCapture</code>는 스트림을 끊지 않고
-      <strong>가속도 센서 폴링 + OpenCV 회전</strong>으로 이를 실시간 보정합니다.
+      Android USB(<code>scrcpy</code>), GoPro, 일반 웹캠, IP 카메라 구분 없이 <strong>모든 입력을 원본 가로 해상도(예: 1280×720)로 통일해 수신</strong>한 뒤,
+      Streamlit UI에서 선택한 <code>camera_rotation</code> 값에 따라 <code>ThreadedWebcam</code> 한 곳에서 공통으로 <code>cv2.rotate()</code>를 적용합니다.
     </p>
 
-    <h3>4.1 가속도 센서 파싱 및 히스테리시스</h3>
-    <ul>
-      <li><code>_orientation_loop()</code> 스레드가 <strong>0.6초 주기</strong>로 <code>adb shell dumpsys sensorservice</code>를 조회합니다.</li>
-      <li><code>Linear Acceleration</code> 및 <code>Uncalibrated</code> 섹션은 건너뛰고, 실제 중력 가속도가 포함된 <code>Accelerometer: last N events</code> 블록의 <strong>가장 마지막(최신) 이벤트</strong> <code>(ax, ay, az)</code>를 읽습니다.</li>
-      <li>폰의 '자동 회전 잠금' 설정과 무관하게 물리적 기울기를 감지합니다.</li>
-      <li><strong>히스테리시스(떨림 방지):</strong> <code>max(|ax|, |ay|) &lt; 5.0</code> (책상 위에 평평하게 놓인 상태)이거나 우세 축이 반대 축의 <code>1.35배</code> 미만이면 직전 회전 각도를 그대로 유지합니다.</li>
-    </ul>
+    <div class="callout callout-ok">
+      <strong>단일 회전 파이프라인의 장점:</strong><br/>
+      • 와상(누워 있는) 환자 자세나 거치대 흔들림에 의한 오회전 위험이 전혀 없습니다.<br/>
+      • 이미 연결된 카메라에서 회전 각도만 바꿀 때는 <code>ThreadedWebcam.set_rotation()</code>으로 <strong>재연결 없이 즉시 반영</strong>됩니다.<br/>
+      • 회전된 프레임이 AI 추론(YOLOv8 + RTMPose), MP4 녹화, 미리보기 창(<code>video_window.py</code>) 전체에 일관되게 전달됩니다.
+    </div>
 
     <table>
       <thead>
         <tr>
-          <th>폰 물리 자세</th>
-          <th>가속도 센서 조건</th>
-          <th>후면 카메라 회전</th>
-          <th>전면 카메라 회전</th>
-          <th>결과 해상도 (720p 기준)</th>
+          <th>Streamlit 선택</th>
+          <th><code>camera_rotation</code></th>
+          <th>OpenCV 변환</th>
+          <th>출력 해상도 (720p 기준)</th>
         </tr>
       </thead>
       <tbody>
-        <tr>
-          <td>세로 정방향 (똑바로 세움)</td>
-          <td><code>ay ≥ +5.0</code>, <code>|ay| ≥ 1.35|ax|</code></td>
-          <td><code>90°</code> (<code>ROTATE_90_CLOCKWISE</code>)</td>
-          <td><code>270°</code> (<code>ROTATE_90_CCW</code>)</td>
-          <td><code>720 × 1280</code></td>
-        </tr>
-        <tr>
-          <td>세로 역방향 (거꾸로 세움)</td>
-          <td><code>ay ≤ -5.0</code>, <code>|ay| ≥ 1.35|ax|</code></td>
-          <td><code>270°</code> (<code>ROTATE_90_CCW</code>)</td>
-          <td><code>90°</code> (<code>ROTATE_90_CLOCKWISE</code>)</td>
-          <td><code>720 × 1280</code></td>
-        </tr>
-        <tr>
-          <td>가로 좌측 (상단이 왼쪽)</td>
-          <td><code>ax ≥ +5.0</code>, <code>|ax| ≥ 1.35|ay|</code></td>
-          <td><code>0°</code> (원본 유지)</td>
-          <td><code>0°</code> (원본 유지)</td>
-          <td><code>1280 × 720</code></td>
-        </tr>
-        <tr>
-          <td>가로 우측 (상단이 오른쪽)</td>
-          <td><code>ax ≤ -5.0</code>, <code>|ax| ≥ 1.35|ay|</code></td>
-          <td><code>180°</code> (<code>ROTATE_180</code>)</td>
-          <td><code>180°</code> (<code>ROTATE_180</code>)</td>
-          <td><code>1280 × 720</code></td>
-        </tr>
-        <tr>
-          <td>수평 놓임 / 애매한 각도</td>
-          <td><code>max(|ax|, |ay|) &lt; 5.0</code></td>
-          <td colspan="3">직전 회전 각도 유지 (화면 흔들림/플립 방지)</td>
-        </tr>
+        <tr><td><code>0° (가로 기본)</code></td><td><code>0</code></td><td>변환 없음</td><td><code>1280 × 720</code></td></tr>
+        <tr><td><code>90° (세로 · 시계)</code></td><td><code>90</code></td><td><code>cv2.ROTATE_90_CLOCKWISE</code></td><td><code>720 × 1280</code></td></tr>
+        <tr><td><code>270° (세로 · 반시계)</code></td><td><code>270</code></td><td><code>cv2.ROTATE_90_COUNTERCLOCKWISE</code></td><td><code>720 × 1280</code></td></tr>
+        <tr><td><code>180° (상하 반전)</code></td><td><code>180</code></td><td><code>cv2.ROTATE_180</code></td><td><code>1280 × 720</code></td></tr>
       </tbody>
     </table>
 
-    <h3>4.2 측정 중 방향 잠금 (<code>set_orientation_lock</code>)</h3>
-    <div class="callout callout-warn">
-      <strong>왜 세션 중에는 방향을 잠글까?</strong><br/>
-      MP4 녹화(<code>cv2.VideoWriter</code>)는 첫 프레임 해상도로 고정되므로, 측정 도중 <code>1280×720 ↔ 720×1280</code>으로
-      해상도가 바뀌면 프레임 기록이 실패합니다. 따라서 아래와 같이 생애주기를 분리했습니다.
-    </div>
+    <h3>4.1 측정 중 안전성 및 세로 해상도 보존</h3>
     <ul>
-      <li><strong>대기 · 미리보기 중:</strong> <code>_orientation_locked = False</code> → 폰을 세우거나 눕히면 즉시 자동 회전.</li>
-      <li><strong>측정 시작 (<code>init_live_session()</code>):</strong> <code>camera.set_orientation_lock(True)</code> → 시작 시점의 가로/세로 방향 고정.</li>
-      <li><strong>측정 종료 (<code>stop_camera()</code>):</strong> <code>camera.set_orientation_lock(False)</code> → 카메라 연결은 유지한 채 자동 회전 즉시 복귀.</li>
+      <li>측정(<code>active == True</code>) 중에는 Streamlit의 <code>카메라 회전</code> 컨트롤이 자동 비활성화되어 MP4 녹화 도중 해상도가 바뀌지 않습니다.</li>
+      <li><code>compute_downscaled_size()</code>와 <code>encode_preview()</code>는 세로(<code>height &gt; width</code>) 영상의 비율을 보존하며, <code>video_window.py</code>가 세로/가로 창 크기를 자동 전환합니다.</li>
     </ul>
-
-    <h3>4.3 세로 영상 해상도 보존 (<code>compute_downscaled_size</code>)</h3>
-    <p>
-      720p 프리셋(<code>max_width=1280, max_height=720</code>)을 세로 영상(<code>720×1280</code>)에 그대로 적용하면
-      <code>406×720</code>으로 과도하게 축소되는 문제가 있었습니다. 이를 막기 위해 <code>height &gt; width</code>이고
-      <code>max_width &gt; max_height</code>인 경우 상한을 <code>(720, 1280)</code>으로 자동 스왑해 세로 720p 화질을 그대로 유지합니다.
-    </p>
   </section>
 
   <!-- 5. GoPro & DirectShow -->

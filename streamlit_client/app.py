@@ -121,6 +121,7 @@ class SocketExperiment:
                             "camera_url": self.packet.get("camera_url", ""),
                             "camera_max_width": self.packet.get("camera_max_width", 1280),
                             "camera_max_height": self.packet.get("camera_max_height", 720),
+                            "camera_rotation": self.packet.get("camera_rotation", 0),
                             "exercise_name": self.packet.get("exercise_name", ""),
                         })
                     )
@@ -467,7 +468,7 @@ def measurement_tab():
                 value=True,
                 disabled=active or mode == "CALIBRATION",
             )
-            cam_col1, cam_col2, cam_col3, cam_col4 = st.columns([1.1, 1.6, 1.0, 1.0])
+            cam_col1, cam_col2, cam_col_rot, cam_col3, cam_col4 = st.columns([0.9, 1.4, 1.1, 0.9, 0.9])
             camera = cam_col1.number_input(
                 "카메라 선택 (번호)",
                 min_value=0,
@@ -482,12 +483,25 @@ def measurement_tab():
                 "1080p (1920×1080 · 고화질)": (1920, 1080),
             }
             res_choice = cam_col2.selectbox(
-                "고프로 · 카메라 최대 입력 화질",
+                "카메라 최대 입력 화질",
                 list(res_presets.keys()),
                 index=0,
                 disabled=active,
             )
             cam_max_w, cam_max_h = res_presets[res_choice]
+            rot_presets = {
+                "0° (가로 기본)": 0,
+                "90° (세로 · 시계)": 90,
+                "270° (세로 · 반시계)": 270,
+                "180° (상하 반전)": 180,
+            }
+            rot_choice = cam_col_rot.selectbox(
+                "카메라 회전",
+                list(rot_presets.keys()),
+                index=0,
+                disabled=active,
+            )
+            cam_rotation = rot_presets[rot_choice]
             camera_url = st.text_input(
                 "모바일 카메라 URL (선택 · Android USB는 scrcpy://usb 또는 scrcpy://front, Wi-Fi는 http/rtsp 입력)",
                 value="",
@@ -584,6 +598,7 @@ def measurement_tab():
                         "camera_url": camera_url.strip(),
                         "camera_max_width": int(cam_max_w),
                         "camera_max_height": int(cam_max_h),
+                        "camera_rotation": int(cam_rotation),
                     }
                     try:
                         metadata = json.loads(metadata_text.strip() or "{}")

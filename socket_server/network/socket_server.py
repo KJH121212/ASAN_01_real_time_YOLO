@@ -269,6 +269,7 @@ async def watch_camera(server, websocket, packet):
     camera_url = (packet.get("camera_url") or "").strip() or None
     max_width = int(packet.get("camera_max_width", 1280))
     max_height = int(packet.get("camera_max_height", 720))
+    camera_rotation = int(packet.get("camera_rotation", 0))
     server._preview_watchers += 1
     try:
         if server.controller and (
@@ -281,7 +282,9 @@ async def watch_camera(server, websocket, packet):
             started = time.perf_counter()
             camera_failed = True
             try:
-                await asyncio.to_thread(server.start_camera, camera_index, max_width, max_height, camera_url)
+                await asyncio.to_thread(
+                    server.start_camera, camera_index, max_width, max_height, camera_url, camera_rotation
+                )
                 ok, frame, captured_at, _ = server.camera.read_sample()
                 if not ok:
                     raise RuntimeError("카메라에서 영상을 받지 못하고 있습니다. 연결을 확인해 주세요.")
@@ -556,6 +559,7 @@ class ExerciseSocketServer:
         self._camera_url = None
         self._camera_max_width = 1280
         self._camera_max_height = 720
+        self._camera_rotation = 0
         self._camera_lock = threading.Lock()
         self._preview_watchers = 0
         self._preview_pose = {}
@@ -582,8 +586,9 @@ class ExerciseSocketServer:
         from core.skeleton_engine import SkeletonEngine
         return SkeletonEngine(yolo_interval=10, on_progress=report_phase)
 
-    def start_camera(self, camera_index=0, max_width=1280, max_height=720, camera_url=None):
+    def start_camera(self, camera_index=0, max_width=1280, max_height=720, camera_url=None, rotation=0):
         camera_url = (camera_url or "").strip() or None
+        rotation = int(rotation or 0) % 360
         with self._camera_lock:
             if (
                 self.camera
@@ -592,6 +597,9 @@ class ExerciseSocketServer:
                 and self._camera_max_width == max_width
                 and self._camera_max_height == max_height
             ):
+                if self._camera_rotation != rotation:
+                    self.camera.set_rotation(rotation)
+                    self._camera_rotation = rotation
                 return
             if self.camera:
                 self.camera.stop()
@@ -603,18 +611,17 @@ class ExerciseSocketServer:
                 max_width=max_width,
                 max_height=max_height,
                 camera_url=camera_url,
+                rotation=rotation,
             ).start()
             self._camera_index = camera_index
             self._camera_url = camera_url
             self._camera_max_width = max_width
             self._camera_max_height = max_height
+            self._camera_rotation = rotation
 
     def stop_camera(self, force=False):
         """카메라를 해제한다. force=False일 때는 재연결 지연을 없애기 위해 연결을 계속 유지한다."""
         if not force:
-            with self._camera_lock:
-                if self.camera:
-                    self.camera.set_orientation_lock(False)
             return
         with self._camera_lock:
             if self.camera:
@@ -703,9 +710,14 @@ class ExerciseSocketServer:
         max_w = int(data.get("camera_max_width", 1280))
         max_h = int(data.get("camera_max_height", 720))
         camera_url = (data.get("camera_url") or "").strip() or None
-        self.start_camera(int(data.get("camera_index", 0)), max_width=max_w, max_height=max_h, camera_url=camera_url)
-        if self.camera:
-            self.camera.set_orientation_lock(True)
+        camera_rotation = int(data.get("camera_rotation", 0))
+        self.start_camera(
+            int(data.get("camera_index", 0)),
+            max_width=max_w,
+            max_height=max_h,
+            camera_url=camera_url,
+            rotation=camera_rotation,
+        )
         self._preparation_seconds = preparation_seconds
         self._preparation_active = preparation_seconds > 0
         self._measurement_ready_at = None

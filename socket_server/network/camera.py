@@ -263,6 +263,29 @@ def downscale_frame_if_needed(
     return frame
 
 
+def normalize_rotation(rotation: int | None) -> int:
+    """회전 각도를 0, 90, 180, 270 중 하나로 정규화한다."""
+    try:
+        deg = int(rotation or 0) % 360
+    except (TypeError, ValueError):
+        return 0
+    return deg if deg in (0, 90, 180, 270) else 0
+
+
+def rotate_frame_if_needed(frame: np.ndarray, rotation: int = 0) -> np.ndarray:
+    """지정된 각도(90/180/270)로 프레임을 회전한다."""
+    if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3:
+        return frame
+    deg = normalize_rotation(rotation)
+    if deg == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if deg == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if deg == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
 def detect_gopro_usb_ip() -> str | None:
     """USB로 연결된 GoPro 네트워크 대역(172.2X.X.51)을 자동으로 찾는다."""
     candidates = []
@@ -654,8 +677,6 @@ class ScrcpyUsbCapture:
         serial: str | None = None,
         port: int = 27183,
         startup_timeout: float = 8.0,
-        auto_rotate: bool = True,
-        fixed_rotation: int | None = None,
     ) -> None:
         self.scrcpy_exe = scrcpy_exe
         self.ffmpeg_exe = ffmpeg_exe
@@ -669,10 +690,6 @@ class ScrcpyUsbCapture:
         self.serial = serial
         self.port = int(port)
         self.startup_timeout = float(startup_timeout)
-        self.auto_rotate = bool(auto_rotate) and fixed_rotation is None
-        self._rotation_deg = int(fixed_rotation) % 360 if fixed_rotation is not None else 0
-        self._orientation_locked = False
-        self._rot_lock = threading.Lock()
 
         self._frame_bytes = self.width * self.height * 3
         self._adb_proc: subprocess.Popen | None = None
@@ -697,94 +714,10 @@ class ScrcpyUsbCapture:
         cmd.extend(args)
         return cmd
 
-    def set_orientation_lock(self, locked: bool) -> None:
-        """측정/녹화 중 해상도 변경을 방지하기 위해 현재 회전 방향을 잠그거나 해제한다."""
-        with self._rot_lock:
-            self._orientation_locked = bool(locked)
-
-    def _query_rotation_deg(self) -> int | None:
-        """ADB 가속도 센서로 폰의 물리적 방향(가로/세로)을 읽어 프레임 회전 각도(0/90/180/270)를 반환한다."""
-        startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        try:
-            out = subprocess.check_output(
-                self._adb_cmd("shell", "dumpsys", "sensorservice"),
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                timeout=2.0,
-                creationflags=startup_flags,
-            )
-        except Exception:
-            return None
-
-        in_accel = False
-        last_xyz = None
-        num_re = re.compile(r"\)\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)")
-        for line in out.splitlines():
-            stripped = line.strip()
-            if "last" in stripped.lower() and "events" in stripped.lower():
-                low = stripped.lower()
-                in_accel = ("accelerometer" in low) and ("linear" not in low) and ("uncalibrated" not in low)
-                continue
-            if in_accel:
-                m = num_re.search(stripped)
-                if m:
-                    last_xyz = (float(m.group(1)), float(m.group(2)), float(m.group(3)))
-                elif stripped and not stripped[0].isdigit():
-                    if last_xyz is not None:
-                        break
-                    in_accel = False
-
-        if last_xyz is None:
-            return None
-
-        ax, ay, _ = last_xyz
-        abs_x, abs_y = abs(ax), abs(ay)
-        # 폰이 바닥에 거의 수평으로 놓여 있거나 애매한 각도면 직전 방향을 유지(히스테리시스)
-        if max(abs_x, abs_y) < 5.0:
-            return None
-        if abs_y >= abs_x * 1.35:
-            if ay > 0:
-                return 270 if self.facing == "front" else 90
-            return 90 if self.facing == "front" else 270
-        if abs_x >= abs_y * 1.35:
-            return 0 if ax > 0 else 180
-        return None
-
-    def _orientation_loop(self) -> None:
-        """주기적으로 폰의 가속도 센서를 확인해 가로/세로 회전 각도를 갱신한다."""
-        while not self._stop_event.is_set():
-            if not self._orientation_locked:
-                deg = self._query_rotation_deg()
-                if deg is not None:
-                    with self._rot_lock:
-                        if not self._orientation_locked and deg != self._rotation_deg:
-                            self._rotation_deg = deg
-                            print(f"[CAMERA] Android USB 방향 변경 감지 -> {deg}° 회전 적용", flush=True)
-            for _ in range(6):
-                if self._stop_event.is_set():
-                    break
-                time.sleep(0.1)
-
-    @staticmethod
-    def _apply_rotation(frame: np.ndarray, deg: int) -> np.ndarray:
-        if deg == 90:
-            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        if deg == 180:
-            return cv2.rotate(frame, cv2.ROTATE_180)
-        if deg == 270:
-            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame
-
     def open(self) -> bool:
         """scrcpy-server를 푸시·실행하고 FFmpeg 파이프를 통해 첫 프레임까지 대기한다."""
         startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         scrcpy_ver = _get_scrcpy_version(self.scrcpy_exe)
-
-        if self.auto_rotate:
-            init_deg = self._query_rotation_deg()
-            if init_deg is not None:
-                self._rotation_deg = init_deg
 
         push = subprocess.run(
             self._adb_cmd("push", str(self.server_jar), "/data/local/tmp/scrcpy-server.jar"),
@@ -882,8 +815,6 @@ class ScrcpyUsbCapture:
             threading.Thread(target=self._tcp_to_ffmpeg_loop, daemon=True),
             threading.Thread(target=self._reader_loop, daemon=True),
         ]
-        if self.auto_rotate:
-            self._threads.append(threading.Thread(target=self._orientation_loop, daemon=True))
         for t in self._threads:
             t.start()
 
@@ -974,10 +905,6 @@ class ScrcpyUsbCapture:
                 if raw is None:
                     break
                 frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
-                with self._rot_lock:
-                    deg = self._rotation_deg
-                if deg:
-                    frame = self._apply_rotation(frame, deg)
                 now = time.monotonic()
                 with self._cond:
                     self._latest_frame = frame
@@ -1024,12 +951,10 @@ class ScrcpyUsbCapture:
             return False, None
 
     def get(self, prop_id: int) -> float:
-        with self._rot_lock:
-            rotated = self._rotation_deg in (90, 270)
         if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
-            return float(self.height if rotated else self.width)
+            return float(self.width)
         if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
-            return float(self.width if rotated else self.height)
+            return float(self.height)
         if prop_id == cv2.CAP_PROP_FPS:
             return self._calc_capture_fps()
         return 0.0
@@ -1265,6 +1190,7 @@ class ThreadedWebcam:
         max_width=DEFAULT_MAX_CAMERA_WIDTH,
         max_height=DEFAULT_MAX_CAMERA_HEIGHT,
         camera_url: str | None = None,
+        rotation: int = 0,
     ):
         configure_local_and_gopro_no_proxy()
         self.cap = None
@@ -1272,6 +1198,7 @@ class ThreadedWebcam:
         self.camera_url = (camera_url or "").strip() or None
         self.max_width = int(max_width) if max_width else DEFAULT_MAX_CAMERA_WIDTH
         self.max_height = int(max_height) if max_height else DEFAULT_MAX_CAMERA_HEIGHT
+        self.rotation = normalize_rotation(rotation)
         self.raw_resolution = (0, 0)
         self.output_resolution = (0, 0)
         self.gopro_ip = None if self.camera_url else detect_gopro_usb_ip()
@@ -1516,14 +1443,18 @@ class ThreadedWebcam:
         self.stream_type = stream_type
         self._using_direct_udp = using_direct_udp
         raw_h, raw_w = raw_frame.shape[:2]
-        frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
+        frame = rotate_frame_if_needed(
+            downscale_frame_if_needed(raw_frame, self.max_width, self.max_height),
+            self.rotation,
+        )
         out_h, out_w = frame.shape[:2]
         self.raw_resolution = (raw_w, raw_h)
         self.output_resolution = (out_w, out_h)
         self.grabbed = True
         self.frame = frame
         self._raw_frame = raw_frame
-        print(f"[CAMERA] Connected via {stream_type}: {raw_w}x{raw_h} -> {out_w}x{out_h}", flush=True)
+        rot_tag = f", rot={self.rotation}°" if self.rotation else ""
+        print(f"[CAMERA] Connected via {stream_type}: {raw_w}x{raw_h} -> {out_w}x{out_h}{rot_tag}", flush=True)
 
     @staticmethod
     def _valid_frame(grabbed, frame):
@@ -1592,15 +1523,24 @@ class ThreadedWebcam:
                 return False, None, self.captured_at, self.frame_id
 
             if self._scaled_frame_id != self.frame_id or self.frame is None:
-                self.frame = downscale_frame_if_needed(raw_frame, self.max_width, self.max_height)
+                self.frame = rotate_frame_if_needed(
+                    downscale_frame_if_needed(raw_frame, self.max_width, self.max_height),
+                    self.rotation,
+                )
+                out_h, out_w = self.frame.shape[:2]
+                self.output_resolution = (out_w, out_h)
                 self._scaled_frame_id = self.frame_id
 
             return True, self.frame.copy(), self.captured_at, self.frame_id
 
-    def set_orientation_lock(self, locked: bool) -> None:
-        """Android USB 등 자동 회전 카메라의 방향 변경을 잠그거나 해제한다."""
-        if self.cap is not None and hasattr(self.cap, "set_orientation_lock"):
-            self.cap.set_orientation_lock(locked)
+    def set_rotation(self, rotation: int) -> None:
+        """실행 중인 카메라를 재연결하지 않고 출력 회전 각도(0/90/180/270)를 즉시 변경한다."""
+        new_rot = normalize_rotation(rotation)
+        with self.read_lock:
+            if self.rotation != new_rot:
+                self.rotation = new_rot
+                self._scaled_frame_id = -1
+                print(f"[CAMERA] Output rotation updated -> {new_rot}°", flush=True)
 
     def stop(self):
         self.started = False
