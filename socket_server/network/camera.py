@@ -71,6 +71,111 @@ def _find_ffmpeg_exe() -> str | None:
     for path in sorted(binaries.glob("ffmpeg*")):
         if path.is_file() and (path.suffix.lower() == ".exe" if os.name == "nt" else os.access(path, os.X_OK)):
             return str(path)
+    if os.name == "nt":
+        local_app = Path(os.environ.get("LOCALAPPDATA", ""))
+        winget_link = local_app / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe"
+        if winget_link.is_file():
+            return str(winget_link)
+        winget_pkgs = local_app / "Microsoft" / "WinGet" / "Packages"
+        if winget_pkgs.is_dir():
+            for found in winget_pkgs.glob("Gyan.FFmpeg*/**/ffmpeg.exe"):
+                if found.is_file():
+                    return str(found)
+    return None
+
+
+def _find_scrcpy_exe() -> str | None:
+    """사용 가능한 scrcpy 실행 파일 경로를 찾는다."""
+    executable = shutil.which("scrcpy")
+    if executable:
+        return executable
+    server_root = Path(__file__).resolve().parent.parent
+    repo_root = server_root.parent
+    candidates = [
+        server_root / "configs" / "bin" / "scrcpy.exe",
+        repo_root / "tmp" / "scrcpy" / "scrcpy.exe",
+        repo_root / "scrcpy" / "scrcpy.exe",
+    ]
+    if os.name == "nt":
+        local_app = Path(os.environ.get("LOCALAPPDATA", ""))
+        candidates.insert(0, local_app / "Microsoft" / "WinGet" / "Links" / "scrcpy.exe")
+    for cand in candidates:
+        if cand.is_file():
+            return str(cand)
+    if os.name == "nt":
+        winget_pkgs = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
+        if winget_pkgs.is_dir():
+            for found in winget_pkgs.glob("Genymobile.scrcpy*/**/scrcpy.exe"):
+                if found.is_file():
+                    return str(found)
+    for found in (repo_root / "tmp").glob("scrcpy-*/scrcpy.exe"):
+        if found.is_file():
+            return str(found)
+    return None
+
+
+def _resolve_adb_and_scrcpy_server(scrcpy_exe: str) -> tuple[str | None, Path | None]:
+    """scrcpy 실행 파일 기준으로 adb 경로와 scrcpy-server 경로를 찾는다."""
+    scrcpy_dir = Path(scrcpy_exe).resolve().parent
+    adb_name = "adb.exe" if os.name == "nt" else "adb"
+    adb_path = scrcpy_dir / adb_name
+    adb_exe = str(adb_path) if adb_path.is_file() else shutil.which("adb")
+    server_jar = scrcpy_dir / "scrcpy-server"
+    return adb_exe, (server_jar if server_jar.is_file() else None)
+
+
+def _get_scrcpy_version(scrcpy_exe: str) -> str:
+    """설치된 scrcpy 버전을 조회한다."""
+    try:
+        out = subprocess.check_output(
+            [scrcpy_exe, "--version"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=3.0,
+        )
+        match = re.search(r"scrcpy\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)", out)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return "5.0.1"
+
+
+def detect_android_usb_device() -> dict | None:
+    """ADB USB로 연결된 Android 장치(serial, state)를 감지한다."""
+    scrcpy_exe = _find_scrcpy_exe()
+    adb_exe = None
+    if scrcpy_exe:
+        adb_exe, _ = _resolve_adb_and_scrcpy_server(scrcpy_exe)
+    if not adb_exe:
+        adb_exe = shutil.which("adb")
+    if not adb_exe:
+        return None
+    try:
+        startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        out = subprocess.check_output(
+            [adb_exe, "devices"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=3.0,
+            creationflags=startup_flags,
+        )
+    except Exception:
+        return None
+
+    unauthorized_serial = None
+    for line in out.splitlines()[1:]:
+        parts = line.strip().split()
+        if len(parts) >= 2 and ":" not in parts[0]:
+            serial, state = parts[0], parts[1]
+            if state == "device":
+                return {"serial": serial, "state": "device"}
+            if state == "unauthorized" and unauthorized_serial is None:
+                unauthorized_serial = serial
+    if unauthorized_serial:
+        return {"serial": unauthorized_serial, "state": "unauthorized"}
     return None
 
 
@@ -131,9 +236,13 @@ def compute_downscaled_size(
     """가로세로 비율을 유지하면서 max_width/max_height 이내(짝수 크기)로 축소 크기를 계산한다."""
     if width <= 0 or height <= 0:
         return width, height
-    if not max_width or not max_height or (width <= max_width and height <= max_height):
+    if not max_width or not max_height:
         return width, height
-    scale = min(max_width / float(width), max_height / float(height))
+    # 세로(portrait) 영상은 720p 프리셋(1280x720)을 세로 기준(720x1280)으로 적용해 과도한 축소를 방지한다
+    eff_max_w, eff_max_h = (max_height, max_width) if (height > width and max_width > max_height) else (max_width, max_height)
+    if width <= eff_max_w and height <= eff_max_h:
+        return width, height
+    scale = min(eff_max_w / float(width), eff_max_h / float(height))
     new_w = max(2, int(round(width * scale / 2.0)) * 2)
     new_h = max(2, int(round(height * scale / 2.0)) * 2)
     return new_w, new_h
@@ -528,6 +637,512 @@ def open_ffmpeg_dshow_camera(
     return None
 
 
+class ScrcpyUsbCapture:
+    """Android USB(scrcpy-server raw H.264 -> FFmpeg -> raw BGR24) 초저지연 캡처 래퍼."""
+
+    def __init__(
+        self,
+        scrcpy_exe: str,
+        ffmpeg_exe: str,
+        adb_exe: str,
+        server_jar: Path,
+        width: int = DEFAULT_MAX_CAMERA_WIDTH,
+        height: int = DEFAULT_MAX_CAMERA_HEIGHT,
+        fps: int = 30,
+        facing: str = "back",
+        camera_id: str | None = None,
+        serial: str | None = None,
+        port: int = 27183,
+        startup_timeout: float = 8.0,
+        auto_rotate: bool = True,
+        fixed_rotation: int | None = None,
+    ) -> None:
+        self.scrcpy_exe = scrcpy_exe
+        self.ffmpeg_exe = ffmpeg_exe
+        self.adb_exe = adb_exe
+        self.server_jar = server_jar
+        self.width = int(width)
+        self.height = int(height)
+        self.fps = int(fps)
+        self.facing = facing
+        self.camera_id = camera_id
+        self.serial = serial
+        self.port = int(port)
+        self.startup_timeout = float(startup_timeout)
+        self.auto_rotate = bool(auto_rotate) and fixed_rotation is None
+        self._rotation_deg = int(fixed_rotation) % 360 if fixed_rotation is not None else 0
+        self._orientation_locked = False
+        self._rot_lock = threading.Lock()
+
+        self._frame_bytes = self.width * self.height * 3
+        self._adb_proc: subprocess.Popen | None = None
+        self._ffmpeg_proc: subprocess.Popen | None = None
+        self._sock: socket.socket | None = None
+        self._threads: list[threading.Thread] = []
+        self._stop_event = threading.Event()
+        self._first_frame_event = threading.Event()
+        self._cond = threading.Condition()
+
+        self._latest_frame: np.ndarray | None = None
+        self._frame_seq = 0
+        self._last_read_seq = 0
+        self._frame_times: deque[float] = deque(maxlen=60)
+        self._error_lines: deque[str] = deque(maxlen=25)
+        self._closed = False
+
+    def _adb_cmd(self, *args: str) -> list[str]:
+        cmd = [self.adb_exe]
+        if self.serial:
+            cmd.extend(["-s", self.serial])
+        cmd.extend(args)
+        return cmd
+
+    def set_orientation_lock(self, locked: bool) -> None:
+        """측정/녹화 중 해상도 변경을 방지하기 위해 현재 회전 방향을 잠그거나 해제한다."""
+        with self._rot_lock:
+            self._orientation_locked = bool(locked)
+
+    def _query_rotation_deg(self) -> int | None:
+        """ADB 가속도 센서로 폰의 물리적 방향(가로/세로)을 읽어 프레임 회전 각도(0/90/180/270)를 반환한다."""
+        startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            out = subprocess.check_output(
+                self._adb_cmd("shell", "dumpsys", "sensorservice"),
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=2.0,
+                creationflags=startup_flags,
+            )
+        except Exception:
+            return None
+
+        in_accel = False
+        last_xyz = None
+        num_re = re.compile(r"\)\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)")
+        for line in out.splitlines():
+            stripped = line.strip()
+            if "last" in stripped.lower() and "events" in stripped.lower():
+                low = stripped.lower()
+                in_accel = ("accelerometer" in low) and ("linear" not in low) and ("uncalibrated" not in low)
+                continue
+            if in_accel:
+                m = num_re.search(stripped)
+                if m:
+                    last_xyz = (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+                elif stripped and not stripped[0].isdigit():
+                    if last_xyz is not None:
+                        break
+                    in_accel = False
+
+        if last_xyz is None:
+            return None
+
+        ax, ay, _ = last_xyz
+        abs_x, abs_y = abs(ax), abs(ay)
+        # 폰이 바닥에 거의 수평으로 놓여 있거나 애매한 각도면 직전 방향을 유지(히스테리시스)
+        if max(abs_x, abs_y) < 5.0:
+            return None
+        if abs_y >= abs_x * 1.35:
+            if ay > 0:
+                return 270 if self.facing == "front" else 90
+            return 90 if self.facing == "front" else 270
+        if abs_x >= abs_y * 1.35:
+            return 0 if ax > 0 else 180
+        return None
+
+    def _orientation_loop(self) -> None:
+        """주기적으로 폰의 가속도 센서를 확인해 가로/세로 회전 각도를 갱신한다."""
+        while not self._stop_event.is_set():
+            if not self._orientation_locked:
+                deg = self._query_rotation_deg()
+                if deg is not None:
+                    with self._rot_lock:
+                        if not self._orientation_locked and deg != self._rotation_deg:
+                            self._rotation_deg = deg
+                            print(f"[CAMERA] Android USB 방향 변경 감지 -> {deg}° 회전 적용", flush=True)
+            for _ in range(6):
+                if self._stop_event.is_set():
+                    break
+                time.sleep(0.1)
+
+    @staticmethod
+    def _apply_rotation(frame: np.ndarray, deg: int) -> np.ndarray:
+        if deg == 90:
+            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        if deg == 180:
+            return cv2.rotate(frame, cv2.ROTATE_180)
+        if deg == 270:
+            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return frame
+
+    def open(self) -> bool:
+        """scrcpy-server를 푸시·실행하고 FFmpeg 파이프를 통해 첫 프레임까지 대기한다."""
+        startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        scrcpy_ver = _get_scrcpy_version(self.scrcpy_exe)
+
+        if self.auto_rotate:
+            init_deg = self._query_rotation_deg()
+            if init_deg is not None:
+                self._rotation_deg = init_deg
+
+        push = subprocess.run(
+            self._adb_cmd("push", str(self.server_jar), "/data/local/tmp/scrcpy-server.jar"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=startup_flags,
+        )
+        if push.returncode != 0:
+            self._error_lines.append(f"adb push failed: {(push.stderr or push.stdout).strip()}")
+            return False
+
+        subprocess.run(
+            self._adb_cmd("forward", "--remove", f"tcp:{self.port}"),
+            capture_output=True,
+            creationflags=startup_flags,
+        )
+        fwd = subprocess.run(
+            self._adb_cmd("forward", f"tcp:{self.port}", "localabstract:scrcpy"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=startup_flags,
+        )
+        if fwd.returncode != 0:
+            self._error_lines.append(f"adb forward failed: {(fwd.stderr or fwd.stdout).strip()}")
+            return False
+
+        cam_arg = f"camera_id={self.camera_id}" if self.camera_id is not None else f"camera_facing={self.facing}"
+        remote_cmd = (
+            f"CLASSPATH=/data/local/tmp/scrcpy-server.jar "
+            f"app_process / com.genymobile.scrcpy.Server {scrcpy_ver} "
+            f"video_source=camera {cam_arg} camera_size={self.width}x{self.height} camera_fps={self.fps} "
+            f"video_bit_rate=2000000 video_codec_options=i-frame-interval=1,max-bframes=0,priority=0 "
+            f"audio=false control=false "
+            f"tunnel_forward=true raw_stream=true send_dummy_byte=false log_level=info"
+        )
+        self._adb_proc = subprocess.Popen(
+            self._adb_cmd("shell", remote_cmd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=startup_flags,
+        )
+
+        ffmpeg_cmd = [
+            self.ffmpeg_exe,
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-fflags",
+            "nobuffer+discardcorrupt",
+            "-flags",
+            "low_delay",
+            "-flags2",
+            "fast",
+            "-max_delay",
+            "0",
+            "-probesize",
+            "32768",
+            "-analyzeduration",
+            "0",
+            "-threads",
+            "1",
+            "-f",
+            "h264",
+            "-framerate",
+            str(self.fps),
+            "-i",
+            "pipe:0",
+            "-fps_mode",
+            "passthrough",
+            "-flush_packets",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-",
+        ]
+        self._ffmpeg_proc = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            creationflags=startup_flags,
+        )
+
+        self._threads = [
+            threading.Thread(target=self._drain_stream, args=(self._adb_proc.stdout, "SCRCPY"), daemon=True),
+            threading.Thread(target=self._drain_stream, args=(self._adb_proc.stderr, "SCRCPY-ERR"), daemon=True),
+            threading.Thread(target=self._drain_stream, args=(self._ffmpeg_proc.stderr, "FFMPEG"), daemon=True),
+            threading.Thread(target=self._tcp_to_ffmpeg_loop, daemon=True),
+            threading.Thread(target=self._reader_loop, daemon=True),
+        ]
+        if self.auto_rotate:
+            self._threads.append(threading.Thread(target=self._orientation_loop, daemon=True))
+        for t in self._threads:
+            t.start()
+
+        deadline = time.monotonic() + self.startup_timeout
+        while time.monotonic() < deadline:
+            if self._first_frame_event.wait(timeout=0.1):
+                return True
+            if self._ffmpeg_proc.poll() is not None or self._stop_event.is_set():
+                break
+
+        self.release()
+        return False
+
+    def _drain_stream(self, stream, tag: str) -> None:
+        if stream is None:
+            return
+        try:
+            for raw_line in stream:
+                if self._stop_event.is_set():
+                    break
+                text = raw_line.decode("utf-8", errors="replace").strip()
+                if text:
+                    self._error_lines.append(f"[{tag}] {text}")
+        except OSError:
+            pass
+
+    def _tcp_to_ffmpeg_loop(self) -> None:
+        sock = None
+        deadline = time.monotonic() + min(6.0, self.startup_timeout)
+        while not self._stop_event.is_set() and time.monotonic() < deadline:
+            try:
+                s = socket.create_connection(("127.0.0.1", self.port), timeout=1.0)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                s.settimeout(2.0)
+                first = s.recv(65536)
+                if first and self._ffmpeg_proc and self._ffmpeg_proc.stdin:
+                    sock = s
+                    self._sock = s
+                    self._ffmpeg_proc.stdin.write(first)
+                    self._ffmpeg_proc.stdin.flush()
+                    break
+                s.close()
+            except OSError:
+                time.sleep(0.15)
+
+        if sock is None:
+            self._error_lines.append("scrcpy TCP socket connection failed")
+            self._stop_event.set()
+            with self._cond:
+                self._cond.notify_all()
+            return
+
+        try:
+            sock.settimeout(2.0)
+            while not self._stop_event.is_set():
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+                try:
+                    if self._ffmpeg_proc and self._ffmpeg_proc.stdin:
+                        self._ffmpeg_proc.stdin.write(chunk)
+                        self._ffmpeg_proc.stdin.flush()
+                    else:
+                        break
+                except OSError:
+                    break
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            if self._ffmpeg_proc and self._ffmpeg_proc.stdin:
+                try:
+                    self._ffmpeg_proc.stdin.close()
+                except OSError:
+                    pass
+
+    def _reader_loop(self) -> None:
+        proc = self._ffmpeg_proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            while not self._stop_event.is_set():
+                raw = _read_exact(proc.stdout, self._frame_bytes, self._stop_event)
+                if raw is None:
+                    break
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
+                with self._rot_lock:
+                    deg = self._rotation_deg
+                if deg:
+                    frame = self._apply_rotation(frame, deg)
+                now = time.monotonic()
+                with self._cond:
+                    self._latest_frame = frame
+                    self._frame_seq += 1
+                    self._frame_times.append(now)
+                    self._first_frame_event.set()
+                    self._cond.notify_all()
+        except OSError:
+            pass
+        finally:
+            with self._cond:
+                self._cond.notify_all()
+
+    def _calc_capture_fps(self) -> float:
+        if len(self._frame_times) < 2:
+            return 0.0
+        span = self._frame_times[-1] - self._frame_times[0]
+        return (len(self._frame_times) - 1) / span if span > 0 else 0.0
+
+    def isOpened(self) -> bool:
+        return (
+            not self._closed
+            and not self._stop_event.is_set()
+            and self._ffmpeg_proc is not None
+            and self._ffmpeg_proc.poll() is None
+        )
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        deadline = time.monotonic() + 0.5
+        with self._cond:
+            while (
+                self._frame_seq == self._last_read_seq
+                and not self._stop_event.is_set()
+                and self.isOpened()
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False, None
+                self._cond.wait(timeout=remaining)
+
+            if self._frame_seq > self._last_read_seq and self._latest_frame is not None:
+                self._last_read_seq = self._frame_seq
+                return True, self._latest_frame
+            return False, None
+
+    def get(self, prop_id: int) -> float:
+        with self._rot_lock:
+            rotated = self._rotation_deg in (90, 270)
+        if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.height if rotated else self.width)
+        if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.width if rotated else self.height)
+        if prop_id == cv2.CAP_PROP_FPS:
+            return self._calc_capture_fps()
+        return 0.0
+
+    def get_error_summary(self) -> str:
+        return " | ".join(self._error_lines)
+
+    def release(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._stop_event.set()
+        with self._cond:
+            self._cond.notify_all()
+
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+
+        for proc in (self._ffmpeg_proc, self._adb_proc):
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+
+        for proc in (self._ffmpeg_proc, self._adb_proc):
+            if proc is not None:
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+
+        startup_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            subprocess.run(
+                self._adb_cmd("forward", "--remove", f"tcp:{self.port}"),
+                capture_output=True,
+                timeout=2.0,
+                creationflags=startup_flags,
+            )
+        except Exception:
+            pass
+
+        for t in self._threads:
+            if t.is_alive() and threading.current_thread() is not t:
+                t.join(timeout=1.0)
+
+
+def open_scrcpy_usb_camera(
+    width: int = DEFAULT_MAX_CAMERA_WIDTH,
+    height: int = DEFAULT_MAX_CAMERA_HEIGHT,
+    fps: int = 30,
+    facing: str = "back",
+    camera_id: str | None = None,
+    serial: str | None = None,
+    log_prefix: str | None = "[CAMERA]",
+) -> ScrcpyUsbCapture | None:
+    """Android USB(scrcpy) 초저지연 카메라 캡처를 연다."""
+    scrcpy_exe = _find_scrcpy_exe()
+    ffmpeg_exe = _find_ffmpeg_exe()
+    if not scrcpy_exe or not ffmpeg_exe:
+        if log_prefix:
+            print(f"{log_prefix} scrcpy 또는 ffmpeg를 찾을 수 없습니다 (scrcpy={scrcpy_exe}, ffmpeg={ffmpeg_exe}).", flush=True)
+        return None
+    adb_exe, server_jar = _resolve_adb_and_scrcpy_server(scrcpy_exe)
+    if not adb_exe or server_jar is None:
+        if log_prefix:
+            print(f"{log_prefix} adb 또는 scrcpy-server를 찾을 수 없습니다.", flush=True)
+        return None
+
+    if serial is None:
+        dev = detect_android_usb_device()
+        if not dev:
+            if log_prefix:
+                print(f"{log_prefix} USB로 연결된 Android 기기를 찾을 수 없습니다.", flush=True)
+            return None
+        if dev["state"] != "device":
+            if log_prefix:
+                print(f"{log_prefix} Android 기기({dev['serial']}) USB 디버깅 승인이 필요합니다 (state={dev['state']}).", flush=True)
+            return None
+        serial = dev["serial"]
+
+    if log_prefix:
+        print(f"{log_prefix} Attempting Android USB scrcpy ({serial}, {width}x{height}@{fps}, facing={facing})...", flush=True)
+    cap = ScrcpyUsbCapture(
+        scrcpy_exe=scrcpy_exe,
+        ffmpeg_exe=ffmpeg_exe,
+        adb_exe=adb_exe,
+        server_jar=server_jar,
+        width=width,
+        height=height,
+        fps=fps,
+        facing=facing,
+        camera_id=camera_id,
+        serial=serial,
+    )
+    if cap.open():
+        if log_prefix:
+            print(f"{log_prefix} Connected Android USB scrcpy ({serial}, {width}x{height}@{fps}).", flush=True)
+        return cap
+    err = cap.get_error_summary()
+    if err and log_prefix:
+        print(f"{log_prefix} Android USB scrcpy failed: {err}", flush=True)
+    return None
+
+
 def scan_available_cameras(max_index: int = 4) -> dict:
     """사용 가능한 카메라 목록과 GoPro USB 상태를 점검해 진단 정보를 반환한다."""
     configure_local_and_gopro_no_proxy()
@@ -629,10 +1244,13 @@ def scan_available_cameras(max_index: int = 4) -> dict:
         finally:
             cap.release()
 
+    android_dev = detect_android_usb_device()
     return {
         "cameras": cameras,
         "gopro_usb_ip": gopro_ip,
         "gopro_status": gopro_status,
+        "android_usb": android_dev,
+        "scrcpy_available": bool(_find_scrcpy_exe() and _find_ffmpeg_exe()),
         "system_proxies_detected": sys_proxies,
         "no_proxy_configured": os.environ.get("NO_PROXY", ""),
     }
@@ -663,31 +1281,63 @@ class ThreadedWebcam:
         print("[CAMERA] Connecting video input...", flush=True)
 
         # ---------------------------------------------------------
-        # 0차 시도: 모바일 IP 카메라 URL (HTTP MJPEG / RTSP) 직접 연결
+        # 0차 시도: scrcpy:// Android USB 또는 모바일 IP 카메라 URL 직접 연결
         # ---------------------------------------------------------
         if self.camera_url:
-            print(f"[CAMERA] Attempting IP/Mobile stream: {self.camera_url}", flush=True)
-            temp_cap = cv2.VideoCapture(self.camera_url, cv2.CAP_FFMPEG)
-            if not temp_cap.isOpened():
-                temp_cap.release()
-                temp_cap = cv2.VideoCapture(self.camera_url)
-            if temp_cap.isOpened():
-                temp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                for _ in range(30):
+            if self.camera_url.lower().startswith("scrcpy://"):
+                target = self.camera_url[len("scrcpy://"):].strip().lower()
+                facing = "front" if target == "front" else "back"
+                cam_id = target.split("=", 1)[1].strip() if target.startswith("id=") else None
+                out_w, out_h = compute_downscaled_size(
+                    self.max_width, self.max_height, self.max_width, self.max_height
+                )
+                temp_cap = open_scrcpy_usb_camera(
+                    width=out_w,
+                    height=out_h,
+                    fps=30,
+                    facing=facing,
+                    camera_id=cam_id,
+                    log_prefix="[CAMERA]",
+                )
+                if temp_cap is not None:
                     grabbed, raw_frame = temp_cap.read()
                     if self._valid_frame(grabbed, raw_frame):
                         self._assign_initial_stream(
                             temp_cap,
                             cam_idx,
-                            f"IP/Mobile Stream ({self.camera_url})",
+                            f"Android USB scrcpy ({self.camera_url})",
                             raw_frame,
                         )
-                        break
-                    time.sleep(0.1)
+                    else:
+                        temp_cap.release()
                 if self.cap is None:
+                    raise RuntimeError(
+                        f"Android USB(scrcpy) 카메라를 열 수 없습니다 ({self.camera_url}). "
+                        "USB 디버깅 허용 및 scrcpy/ffmpeg 설치 상태를 확인하세요."
+                    )
+            else:
+                print(f"[CAMERA] Attempting IP/Mobile stream: {self.camera_url}", flush=True)
+                temp_cap = cv2.VideoCapture(self.camera_url, cv2.CAP_FFMPEG)
+                if not temp_cap.isOpened():
                     temp_cap.release()
-            if self.cap is None:
-                raise RuntimeError(f"모바일/IP 카메라 스트림을 열 수 없습니다: {self.camera_url}")
+                    temp_cap = cv2.VideoCapture(self.camera_url)
+                if temp_cap.isOpened():
+                    temp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    for _ in range(30):
+                        grabbed, raw_frame = temp_cap.read()
+                        if self._valid_frame(grabbed, raw_frame):
+                            self._assign_initial_stream(
+                                temp_cap,
+                                cam_idx,
+                                f"IP/Mobile Stream ({self.camera_url})",
+                                raw_frame,
+                            )
+                            break
+                        time.sleep(0.1)
+                    if self.cap is None:
+                        temp_cap.release()
+                if self.cap is None:
+                    raise RuntimeError(f"모바일/IP 카메라 스트림을 열 수 없습니다: {self.camera_url}")
 
         dshow_devices = [] if self.cap is not None else list_dshow_video_devices()
         dev_by_idx = {d["index"]: d for d in dshow_devices}
@@ -781,6 +1431,35 @@ class ThreadedWebcam:
                             break
                         time.sleep(0.1)
                     if self.cap is None:
+                        temp_cap.release()
+
+        # ---------------------------------------------------------
+        # 2.5차 시도: USB 연결된 Android 폰(scrcpy) 자동 감지 연결
+        # ---------------------------------------------------------
+        if self.cap is None:
+            android_dev = detect_android_usb_device()
+            if android_dev and android_dev["state"] == "device":
+                out_w, out_h = compute_downscaled_size(
+                    self.max_width, self.max_height, self.max_width, self.max_height
+                )
+                temp_cap = open_scrcpy_usb_camera(
+                    width=out_w,
+                    height=out_h,
+                    fps=30,
+                    facing="back",
+                    serial=android_dev["serial"],
+                    log_prefix="[CAMERA]",
+                )
+                if temp_cap is not None:
+                    grabbed, raw_frame = temp_cap.read()
+                    if self._valid_frame(grabbed, raw_frame):
+                        self._assign_initial_stream(
+                            temp_cap,
+                            cam_idx,
+                            f"Android USB scrcpy ({android_dev['serial']})",
+                            raw_frame,
+                        )
+                    else:
                         temp_cap.release()
 
         # ---------------------------------------------------------
@@ -917,6 +1596,11 @@ class ThreadedWebcam:
                 self._scaled_frame_id = self.frame_id
 
             return True, self.frame.copy(), self.captured_at, self.frame_id
+
+    def set_orientation_lock(self, locked: bool) -> None:
+        """Android USB 등 자동 회전 카메라의 방향 변경을 잠그거나 해제한다."""
+        if self.cap is not None and hasattr(self.cap, "set_orientation_lock"):
+            self.cap.set_orientation_lock(locked)
 
     def stop(self):
         self.started = False

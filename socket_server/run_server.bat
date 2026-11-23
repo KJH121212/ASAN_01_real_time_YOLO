@@ -8,6 +8,10 @@ for %%P in (
     "%~dp0.venv_onnx\Scripts\python.exe"
     "C:\miniconda3\envs\rtm_env_50\python.exe"
     "%USERPROFILE%\miniconda3\envs\rtm_env_50\python.exe"
+    "%USERPROFILE%\anaconda3\envs\rtm_env_50\python.exe"
+    "C:\anaconda3\envs\rtm_env_50\python.exe"
+    "C:\ProgramData\miniconda3\envs\rtm_env_50\python.exe"
+    "C:\ProgramData\anaconda3\envs\rtm_env_50\python.exe"
 ) do (
     if not defined PYTHON_EXE if exist "%%~P" set "PYTHON_EXE=%%~P"
 )

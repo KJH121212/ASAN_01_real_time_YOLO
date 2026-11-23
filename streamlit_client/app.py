@@ -275,11 +275,11 @@ async def check_server(uri):
 
 
 async def scan_cameras_via_server(uri, max_index=4):
-    """소켓 서버에 연결된 카메라 및 GoPro 상태를 WebSocket으로 조회한다."""
+    """소켓 서버에 연결된 카메라 및 Android USB 상태를 WebSocket으로 조회한다."""
     async with _ws_connect(uri, open_timeout=4, close_timeout=1) as socket:
         await socket.send(json.dumps({"type": "CMD_SCAN_CAMERAS", "max_index": max_index}))
         for _ in range(10):
-            packet = json.loads(await asyncio.wait_for(socket.recv(), timeout=12))
+            packet = json.loads(await asyncio.wait_for(socket.recv(), timeout=25))
             if packet.get("type") == "CAMERA_SCAN_RESULT":
                 return packet
         raise RuntimeError("카메라 진단 응답을 받지 못했습니다.")
@@ -489,9 +489,9 @@ def measurement_tab():
             )
             cam_max_w, cam_max_h = res_presets[res_choice]
             camera_url = st.text_input(
-                "모바일 IP 카메라 URL (선택 · Wi-Fi IP Webcam / RTSP 사용 시 입력, 비우면 위 카메라 번호 사용)",
+                "모바일 카메라 URL (선택 · Android USB는 scrcpy://usb 또는 scrcpy://front, Wi-Fi는 http/rtsp 입력)",
                 value="",
-                placeholder="예: http://192.168.0.15:8080/video 또는 rtsp://192.168.0.15:8554/live",
+                placeholder="예: scrcpy://usb (Android USB) 또는 http://192.168.0.15:8080/video",
                 disabled=active,
             )
 
@@ -510,8 +510,8 @@ def measurement_tab():
                 metadata_text = st.text_area("환자 부가 정보 JSON (선택)", value="{}", disabled=active)
 
             cam_col3.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if cam_col3.button("🔍 카메라 · 고프로 진단", disabled=active, use_container_width=True):
-                with st.spinner("소켓 서버에 카메라 · GoPro 진단을 요청하는 중..."):
+            if cam_col3.button("🔍 카메라 진단", disabled=active, use_container_width=True):
+                with st.spinner("소켓 서버에 카메라 진단을 요청하는 중..."):
                     try:
                         st.session_state["camera_diag"] = asyncio.run(scan_cameras_via_server(uri.strip()))
                     except Exception as exc:
@@ -539,7 +539,20 @@ def measurement_tab():
                 )
                 gopro_ip = diag.get("gopro_usb_ip")
                 gopro_msg = f"감지됨 (`{gopro_ip}`)" if gopro_ip else "미감지 (일반 웹캠 또는 DirectShow 모드)"
-                st.info(f"📷 **사용 가능한 카메라**: {cam_text}\n\n📡 **GoPro USB 이더넷**: {gopro_msg}")
+                android_usb = diag.get("android_usb")
+                if android_usb:
+                    android_msg = (
+                        f"연결됨 (`{android_usb['serial']}` · `scrcpy://usb` 사용 가능)"
+                        if android_usb.get("state") == "device"
+                        else f"승인 대기 중 (`{android_usb['serial']}` · 폰 화면에서 USB 디버깅 허용 필요)"
+                    )
+                else:
+                    android_msg = "미감지"
+                st.info(
+                    f"📷 **사용 가능한 카메라**: {cam_text}\n\n"
+                    f"📱 **Android USB (scrcpy)**: {android_msg}\n\n"
+                    f"📡 **GoPro USB 이더넷**: {gopro_msg}"
+                )
 
             start_col, stop_col, check_col = st.columns(3)
             with start_col:

@@ -204,7 +204,8 @@ class BackgroundModelLoader:
 def encode_preview(frame, keypoints, pose, exercise_name, elapsed_sec):
     """미리보기 전용 축소 프레임에 23관절 스켈레톤과 진행바를 그려 JPEG로 인코딩한다."""
     height, width = frame.shape[:2]
-    scale = min(PREVIEW_SIZE[0] / width, PREVIEW_SIZE[1] / height, 1.0)
+    target_w, target_h = (PREVIEW_SIZE[1], PREVIEW_SIZE[0]) if height > width else PREVIEW_SIZE
+    scale = min(target_w / width, target_h / height, 1.0)
     if scale < 1:
         frame = cv2.resize(
             frame,
@@ -611,6 +612,9 @@ class ExerciseSocketServer:
     def stop_camera(self, force=False):
         """카메라를 해제한다. force=False일 때는 재연결 지연을 없애기 위해 연결을 계속 유지한다."""
         if not force:
+            with self._camera_lock:
+                if self.camera:
+                    self.camera.set_orientation_lock(False)
             return
         with self._camera_lock:
             if self.camera:
@@ -700,6 +704,8 @@ class ExerciseSocketServer:
         max_h = int(data.get("camera_max_height", 720))
         camera_url = (data.get("camera_url") or "").strip() or None
         self.start_camera(int(data.get("camera_index", 0)), max_width=max_w, max_height=max_h, camera_url=camera_url)
+        if self.camera:
+            self.camera.set_orientation_lock(True)
         self._preparation_seconds = preparation_seconds
         self._preparation_active = preparation_seconds > 0
         self._measurement_ready_at = None

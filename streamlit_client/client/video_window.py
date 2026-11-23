@@ -90,8 +90,9 @@ class VideoWindow:
         title = "Motion Camera (COCO-23)"
         try:
             cv2.namedWindow(title, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(title, 1120, 500)
+            cv2.resizeWindow(title, 1120, 630)
             previous = None
+            last_orientation = None
             while True:
                 with self.lock:
                     client = self.client
@@ -104,7 +105,19 @@ class VideoWindow:
                     received is not None and time.monotonic() - received > 2,
                 )
                 if signature != previous:
-                    cv2.imshow(title, video_image(state))
+                    img = video_image(state)
+                    img_h, img_w = img.shape[:2]
+                    orientation = "portrait" if img_h > img_w else "landscape"
+                    if state.get("frame") is not None and orientation != last_orientation:
+                        if orientation == "portrait":
+                            win_h = 860
+                            win_w = max(320, round(win_h * img_w / max(1, img_h)))
+                        else:
+                            win_w = 1120
+                            win_h = max(360, round(win_w * img_h / max(1, img_w)))
+                        cv2.resizeWindow(title, win_w, win_h)
+                        last_orientation = orientation
+                    cv2.imshow(title, img)
                     previous = signature
                 key = cv2.waitKey(5) & 0xFF
                 if key == 27 or cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1:

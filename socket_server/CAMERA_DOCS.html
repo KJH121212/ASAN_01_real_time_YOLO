@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ASAN Motion Camera System — 아키텍처 &amp; 동작 상세 문서</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface-2: #273449;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-soft: rgba(56, 189, 248, 0.14);
+    --green: #34d399;
+    --green-soft: rgba(52, 211, 153, 0.14);
+    --amber: #fbbf24;
+    --amber-soft: rgba(251, 191, 36, 0.14);
+    --rose: #fb7185;
+    --rose-soft: rgba(251, 113, 133, 0.14);
+    --violet: #a78bfa;
+    --violet-soft: rgba(167, 139, 250, 0.14);
+    --code-bg: #0b1220;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: "Pretendard", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+    display: flex;
+    min-height: 100vh;
+  }
+  nav.sidebar {
+    width: 280px;
+    flex-shrink: 0;
+    background: #0b1120;
+    border-right: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 24px 18px 40px;
+  }
+  .brand {
+    font-size: 16px;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+  .brand-sub {
+    font-size: 12px;
+    color: var(--accent);
+    margin-bottom: 18px;
+    font-weight: 600;
+  }
+  .search-box {
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    margin-bottom: 18px;
+    outline: none;
+  }
+  .search-box:focus { border-color: var(--accent); }
+  .nav-group {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 18px 0 8px 6px;
+    font-weight: 700;
+  }
+  .nav-link {
+    display: block;
+    padding: 7px 10px;
+    border-radius: 7px;
+    color: #cbd5e1;
+    text-decoration: none;
+    font-size: 13px;
+    margin-bottom: 2px;
+    transition: background 0.15s, color 0.15s;
+  }
+  .nav-link:hover {
+    background: var(--surface);
+    color: #fff;
+  }
+  main {
+    flex: 1;
+    max-width: 1080px;
+    padding: 36px 44px 80px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  header.hero {
+    background: linear-gradient(135deg, rgba(56, 189, 248, 0.14), rgba(167, 139, 250, 0.12));
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 32px;
+    margin-bottom: 32px;
+  }
+  header.hero h1 {
+    margin: 0 0 8px;
+    font-size: 26px;
+    color: #fff;
+    letter-spacing: -0.02em;
+  }
+  header.hero p {
+    margin: 0 0 16px;
+    color: #cbd5e1;
+    font-size: 14.5px;
+  }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    border: 1px solid transparent;
+  }
+  .b-blue { background: var(--accent-soft); color: var(--accent); border-color: rgba(56,189,248,0.3); }
+  .b-green { background: var(--green-soft); color: var(--green); border-color: rgba(52,211,153,0.3); }
+  .b-amber { background: var(--amber-soft); color: var(--amber); border-color: rgba(251,191,36,0.3); }
+  .b-violet { background: var(--violet-soft); color: var(--violet); border-color: rgba(167,139,250,0.3); }
+  .b-rose { background: var(--rose-soft); color: var(--rose); border-color: rgba(251,113,133,0.3); }
+
+  section.doc-section {
+    margin-bottom: 42px;
+    scroll-margin-top: 24px;
+  }
+  h2 {
+    font-size: 20px;
+    color: #fff;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+    margin: 0 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h3 {
+    font-size: 15.5px;
+    color: var(--accent);
+    margin: 22px 0 10px;
+  }
+  p { margin: 0 0 12px; font-size: 14.2px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; font-size: 14.2px; }
+  li { margin-bottom: 6px; }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 14px;
+    margin: 14px 0 18px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .card p { font-size: 13px; color: var(--muted); margin: 0; }
+  .callout {
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin: 14px 0 18px;
+    font-size: 13.5px;
+    border: 1px solid;
+  }
+  .callout-info { background: var(--accent-soft); border-color: rgba(56,189,248,0.35); }
+  .callout-warn { background: var(--amber-soft); border-color: rgba(251,191,36,0.35); }
+  .callout-ok { background: var(--green-soft); border-color: rgba(52,211,153,0.35); }
+  .callout strong { color: #fff; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 18px;
+    font-size: 13.5px;
+    background: var(--surface);
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  th, td {
+    padding: 10px 13px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--surface-2);
+    color: #fff;
+    font-weight: 700;
+    font-size: 12.5px;
+  }
+  tr:last-child td { border-bottom: none; }
+  code {
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 12.5px;
+    background: rgba(15, 23, 42, 0.75);
+    color: #7dd3fc;
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid rgba(51, 65, 85, 0.7);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: #e2e8f0;
+    margin: 12px 0 16px;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+  .diagram-wrap {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px;
+    margin: 14px 0 18px;
+    overflow-x: auto;
+  }
+  .step-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 14px 0 18px;
+  }
+  .step-item {
+    display: flex;
+    gap: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 13px 16px;
+    align-items: flex-start;
+  }
+  .step-num {
+    min-width: 56px;
+    text-align: center;
+    padding: 4px 8px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 800;
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid rgba(56,189,248,0.3);
+  }
+  .step-body strong { color: #fff; display: block; margin-bottom: 3px; font-size: 14px; }
+  .step-body p { margin: 0; font-size: 13.2px; color: #cbd5e1; }
+  .hidden-by-search { display: none !important; }
+  @media (max-width: 900px) {
+    body { flex-direction: column; }
+    nav.sidebar { width: 100%; height: auto; position: static; }
+    main { padding: 24px 18px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="brand">ASAN Camera System</div>
+  <div class="brand-sub">COCO-23 ONNX · Real-Time Capture</div>
+  <input id="searchInput" class="search-box" type="text" placeholder="섹션 · 키워드 검색..." />
+
+  <div class="nav-group">아키텍처</div>
+  <a class="nav-link" href="#overview">1. 개요 및 전체 파이프라인</a>
+  <a class="nav-link" href="#priority">2. 카메라 연결 우선순위</a>
+
+  <div class="nav-group">입력 백엔드</div>
+  <a class="nav-link" href="#android-usb">3. Android USB (scrcpy)</a>
+  <a class="nav-link" href="#auto-rotate">4. 실시간 자동 회전 &amp; 방향 잠금</a>
+  <a class="nav-link" href="#gopro-dshow">5. GoPro &amp; DirectShow / IP</a>
+
+  <div class="nav-group">미리보기 &amp; 프로토콜</div>
+  <a class="nav-link" href="#preview-window">6. 미리보기 인코딩 &amp; 동적 창 크기</a>
+  <a class="nav-link" href="#ws-protocol">7. WebSocket 진단 / 제어 API</a>
+
+  <div class="nav-group">운영 &amp; 문제 해결</div>
+  <a class="nav-link" href="#setup-env">8. 설치 · 바이너리 탐색 · 실행</a>
+  <a class="nav-link" href="#troubleshooting">9. 자주 발생하는 오류 해결</a>
+</nav>
+
+<main>
+  <header class="hero">
+    <h1>ASAN 실시간 카메라 캡처 시스템 상세 문서</h1>
+    <p>
+      <code>socket_server/network/camera.py</code>, <code>socket_server/network/socket_server.py</code>,
+      <code>streamlit_client/client/video_window.py</code>에 구현된 통합 카메라 수신·회전·미리보기 파이프라인의
+      구조와 동작 원리를 정리한 기술 문서입니다.
+    </p>
+    <div class="badges">
+      <span class="badge b-green">Android USB (scrcpy 초저지연)</span>
+      <span class="badge b-blue">가속도 센서 자동 가로/세로 회전</span>
+      <span class="badge b-violet">GoPro FFmpeg DirectShow / UDP</span>
+      <span class="badge b-amber">HTTP MJPEG / RTSP / Webcam</span>
+      <span class="badge b-rose">동적 비율 OpenCV 미리보기 창</span>
+    </div>
+  </header>
+
+  <!-- 1. 개요 -->
+  <section id="overview" class="doc-section">
+    <h2>1. 개요 및 전체 파이프라인</h2>
+    <p>
+      ASAN Motion 서버는 하나의 통합 클래스(<code>ThreadedWebcam</code>)를 통해
+      <strong>Android USB(scrcpy)</strong>, <strong>GoPro USB(DirectShow / UDP)</strong>,
+      <strong>모바일 IP(HTTP/RTSP)</strong>, <strong>일반 웹캠</strong>을 동일한 인터페이스로 수신합니다.
+      별도 백그라운드 스레드가 최신 프레임만 버퍼에 유지하므로 AI 추론(YOLO + RTMPose)과 미리보기 전송이
+      카메라 I/O 지연에 묶이지 않습니다.
+    </p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 960 250" width="100%" xmlns="http://www.w3.org/2000/svg" style="font-family: 'Malgun Gothic', sans-serif;">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+          </marker>
+        </defs>
+        <!-- Sources -->
+        <rect x="12" y="14" width="195" height="46" rx="8" fill="#132a24" stroke="#34d399" stroke-width="1.5"/>
+        <text x="109" y="34" fill="#34d399" font-size="12.5" font-weight="700" text-anchor="middle">Android USB (scrcpy)</text>
+        <text x="109" y="50" fill="#94a3b8" font-size="10.5" text-anchor="middle">ADB H.264 + 가속도 센서</text>
+
+        <rect x="12" y="72" width="195" height="46" rx="8" fill="#1e2238" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="109" y="92" fill="#a78bfa" font-size="12.5" font-weight="700" text-anchor="middle">GoPro USB</text>
+        <text x="109" y="108" fill="#94a3b8" font-size="10.5" text-anchor="middle">FFmpeg DSHOW / UDP :8554</text>
+
+        <rect x="12" y="130" width="195" height="46" rx="8" fill="#2a2417" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="109" y="150" fill="#fbbf24" font-size="12.5" font-weight="700" text-anchor="middle">IP Camera URL</text>
+        <text x="109" y="166" fill="#94a3b8" font-size="10.5" text-anchor="middle">HTTP MJPEG / RTSP</text>
+
+        <rect x="12" y="188" width="195" height="46" rx="8" fill="#1e293b" stroke="#64748b" stroke-width="1.5"/>
+        <text x="109" y="208" fill="#e2e8f0" font-size="12.5" font-weight="700" text-anchor="middle">일반 USB 웹캠</text>
+        <text x="109" y="224" fill="#94a3b8" font-size="10.5" text-anchor="middle">OpenCV CAP_DSHOW</text>
+
+        <!-- Arrows to ThreadedWebcam -->
+        <line x1="207" y1="37" x2="258" y2="112" stroke="#38bdf8" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <line x1="207" y1="95" x2="258" y2="118" stroke="#38bdf8" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <line x1="207" y1="153" x2="258" y2="128" stroke="#38bdf8" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <line x1="207" y1="211" x2="258" y2="136" stroke="#38bdf8" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+        <!-- ThreadedWebcam -->
+        <rect x="264" y="64" width="205" height="122" rx="10" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+        <text x="366" y="90" fill="#fff" font-size="13.5" font-weight="800" text-anchor="middle">ThreadedWebcam</text>
+        <text x="366" y="110" fill="#7dd3fc" font-size="11" text-anchor="middle">network/camera.py</text>
+        <text x="366" y="132" fill="#cbd5e1" font-size="11" text-anchor="middle">• 최신 프레임 스레드 버퍼</text>
+        <text x="366" y="150" fill="#cbd5e1" font-size="11" text-anchor="middle">• 세로/가로 자동 다운스케일</text>
+        <text x="366" y="168" fill="#cbd5e1" font-size="11" text-anchor="middle">• 세션 중 방향 잠금 제어</text>
+
+        <!-- Arrow to Socket Server -->
+        <line x1="469" y1="125" x2="516" y2="125" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- Socket Server -->
+        <rect x="522" y="48" width="198" height="154" rx="10" fill="#1e293b" stroke="#a78bfa" stroke-width="1.8"/>
+        <text x="621" y="74" fill="#fff" font-size="13.5" font-weight="800" text-anchor="middle">Socket Server</text>
+        <text x="621" y="93" fill="#c4b5fd" font-size="11" text-anchor="middle">network/socket_server.py</text>
+        <text x="621" y="116" fill="#cbd5e1" font-size="11" text-anchor="middle">• YOLOv8n + RTMPose-23</text>
+        <text x="621" y="134" fill="#cbd5e1" font-size="11" text-anchor="middle">• encode_preview() JPEG</text>
+        <text x="621" y="152" fill="#cbd5e1" font-size="11" text-anchor="middle">  (가로 640×360 / 세로 360×640)</text>
+        <text x="621" y="170" fill="#cbd5e1" font-size="11" text-anchor="middle">• MP4 녹화 &amp; NPZ 저장</text>
+        <text x="621" y="188" fill="#cbd5e1" font-size="11" text-anchor="middle">• WebSocket (:8080)</text>
+
+        <!-- Arrow to Client -->
+        <line x1="720" y1="125" x2="764" y2="125" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- Client -->
+        <rect x="770" y="58" width="178" height="134" rx="10" fill="#1e293b" stroke="#34d399" stroke-width="1.8"/>
+        <text x="859" y="84" fill="#fff" font-size="13.5" font-weight="800" text-anchor="middle">Streamlit Client</text>
+        <text x="859" y="103" fill="#6ee7b7" font-size="11" text-anchor="middle">app.py + video_window.py</text>
+        <text x="859" y="126" fill="#cbd5e1" font-size="11" text-anchor="middle">• 카메라 진단 UI</text>
+        <text x="859" y="144" fill="#cbd5e1" font-size="11" text-anchor="middle">• OpenCV 독립 미리보기 창</text>
+        <text x="859" y="162" fill="#cbd5e1" font-size="11" text-anchor="middle">• 가로/세로 창 자동 리사이즈</text>
+        <text x="859" y="180" fill="#cbd5e1" font-size="11" text-anchor="middle">• 실시간 관절/진행률 오버레이</text>
+      </svg>
+    </div>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-title"><code>socket_server/network/camera.py</code></div>
+        <p>모든 카메라 드라이버 래퍼(<code>ScrcpyUsbCapture</code>, <code>FFmpegDShowCapture</code>, <code>ThreadedWebcam</code>), 바이너리 탐색, 진단(<code>scan_available_cameras</code>) 담당.</p>
+      </div>
+      <div class="card">
+        <div class="card-title"><code>socket_server/network/socket_server.py</code></div>
+        <p>카메라 연결 유지/해제, 세션 시작·종료 시 방향 잠금, 미리보기 JPEG 인코딩(<code>encode_preview</code>), WebSocket 명령 처리.</p>
+      </div>
+      <div class="card">
+        <div class="card-title"><code>streamlit_client/client/video_window.py</code></div>
+        <p>수신된 JPEG를 독립 OpenCV 창에 표시하고, 프레임 방향 전환 시 창 크기와 비율을 자동 조정.</p>
+      </div>
+      <div class="card">
+        <div class="card-title"><code>streamlit_client/app.py</code></div>
+        <p>카메라 번호·해상도 프리셋·URL(<code>scrcpy://usb</code> 등) 입력, <code>🔍 카메라 진단</code> 및 <code>🔌 카메라 연결 끊기</code> UI 제공.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. 연결 우선순위 -->
+  <section id="priority" class="doc-section">
+    <h2>2. 카메라 연결 우선순위 (<code>ThreadedWebcam.__init__</code>)</h2>
+    <p>
+      클라이언트가 보낸 <code>camera_url</code>과 <code>camera_index</code>를 기준으로 아래 순서대로 연결을 시도합니다.
+      앞 단계에서 유효한 3채널 BGR 프레임이 수신되면 즉시 연결을 확정합니다.
+    </p>
+
+    <div class="step-list">
+      <div class="step-item">
+        <div class="step-num">0차 시도</div>
+        <div class="step-body">
+          <strong><code>camera_url</code> 명시 입력 시 (최우선)</strong>
+          <p>
+            • <code>scrcpy://usb</code> (후면), <code>scrcpy://front</code> (전면), <code>scrcpy://id=&lt;번호&gt;</code> → <code>open_scrcpy_usb_camera()</code> 직접 호출.<br/>
+            • <code>http://...</code>, <code>rtsp://...</code> → OpenCV <code>CAP_FFMPEG</code>로 IP 카메라 스트림 연결.<br/>
+            • URL을 명시했는데 열리지 않으면 폴백하지 않고 즉시 명확한 에러 메시지를 반환합니다.
+          </p>
+        </div>
+      </div>
+      <div class="step-item">
+        <div class="step-num">1차 시도</div>
+        <div class="step-body">
+          <strong>사용자 지정 <code>camera_index</code> 또는 GoPro DirectShow</strong>
+          <p>
+            DirectShow 장치 목록(<code>list_dshow_video_devices()</code>)에서 지정 번호 또는 GoPro 장치를 찾습니다.
+            GoPro는 <code>FFmpegDShowCapture</code>(1080p 풀화각 수신 후 스케일), 일반 카메라는 <code>cv2.VideoCapture(idx, CAP_DSHOW)</code>로 연결합니다.
+          </p>
+        </div>
+      </div>
+      <div class="step-item">
+        <div class="step-num">2차 시도</div>
+        <div class="step-body">
+          <strong>GoPro USB UDP 직접 스트림</strong>
+          <p>
+            <code>172.2X.X.51</code> 대역에서 GoPro USB 이더넷이 감지되면 HTTP API(<code>/gp/gpWebcam/START</code>)로
+            스트림을 켠 뒤 <code>udp://@0.0.0.0:8554</code>를 <code>CAP_FFMPEG</code>로 수신합니다.
+          </p>
+        </div>
+      </div>
+      <div class="step-item">
+        <div class="step-num">2.5차 시도</div>
+        <div class="step-body">
+          <strong>USB 연결된 Android 기기 자동 감지 (<code>scrcpy</code>)</strong>
+          <p>
+            <code>camera_url</code>이 비어 있더라도 승인된 Android USB 기기(<code>adb devices</code>에서 <code>state == "device"</code>)가
+            연결되어 있으면 자동으로 <code>ScrcpyUsbCapture</code>(후면 카메라, 30fps)에 연결합니다.
+          </p>
+        </div>
+      </div>
+      <div class="step-item">
+        <div class="step-num">3차 시도</div>
+        <div class="step-body">
+          <strong>일반 활성 웹캠 폴백</strong>
+          <p>
+            가상 더미 카메라(<code>omen cam</code>, <code>obs virtual</code>, <code>xsplit</code>, <code>manycam</code>, <code>snap camera</code>)를
+            제외한 나머지 DirectShow 영상 장치 중 정상 프레임을 주는 첫 번째 카메라에 연결합니다.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Android USB (scrcpy) -->
+  <section id="android-usb" class="doc-section">
+    <h2>3. Android USB (<code>ScrcpyUsbCapture</code>) 초저지연 스트리밍</h2>
+    <p>
+      별도 스마트폰 앱 설치나 가상 웹캠 드라이버 없이 <code>scrcpy-server</code>와 <code>FFmpeg</code>만으로
+      안드로이드 카메라의 순수 H.264 스트림을 PC 메모리(<code>np.ndarray</code>)로 직접 받아오는 파이프라인입니다.
+    </p>
+
+    <h3>3.1 연결 시퀀스</h3>
+    <ol>
+      <li><code>adb -s &lt;serial&gt; push scrcpy-server /data/local/tmp/scrcpy-server.jar</code> 로 서버 바이너리를 폰에 전송합니다.</li>
+      <li><code>adb -s &lt;serial&gt; forward tcp:27183 localabstract:scrcpy</code> 로 USB 로컬 TCP 터널을 엽니다.</li>
+      <li><code>adb shell app_process / com.genymobile.scrcpy.Server &lt;ver&gt; ...</code> 로 폰 카메라 인코더를 실행합니다.</li>
+      <li>PC에서 <code>127.0.0.1:27183</code> TCP 소켓(<code>TCP_NODELAY=1</code>)에 연결해 H.264 바이트 스트림을 <code>ffmpeg</code>의 <code>stdin</code>(<code>pipe:0</code>)으로 즉시 밀어 넣습니다.</li>
+      <li><code>ffmpeg</code>가 <code>rawvideo / bgr24</code>로 디코딩해 <code>stdout</code>으로 출력하면 <code>_reader_loop()</code>가 <code>width × height × 3</code> 바이트 단위로 읽어 NumPy 프레임으로 변환합니다.</li>
+    </ol>
+
+    <h3>3.2 초저지연 핵심 파라미터</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 24%;">구간</th>
+          <th style="width: 34%;">옵션</th>
+          <th>역할</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>scrcpy-server</code></td>
+          <td><code>video_source=camera</code><br/><code>camera_facing=back|front</code></td>
+          <td>화면 미러링이 아닌 안드로이드 카메라 센서 직접 캡처 (Android 12+ 지원).</td>
+        </tr>
+        <tr>
+          <td><code>scrcpy-server</code></td>
+          <td><code>video_bit_rate=2000000</code><br/><code>i-frame-interval=1,max-bframes=0,priority=0</code></td>
+          <td>B-frame 제거로 인코더 버퍼링 지연 제거, 2Mbps 대역폭으로 USB 전송 안정화.</td>
+        </tr>
+        <tr>
+          <td><code>scrcpy-server</code></td>
+          <td><code>tunnel_forward=true raw_stream=true</code><br/><code>audio=false control=false</code></td>
+          <td>오디오/제어 채널을 끄고 헤더 없는 순수 H.264 바이트 스트림만 전송.</td>
+        </tr>
+        <tr>
+          <td><code>FFmpeg</code></td>
+          <td><code>-fflags nobuffer+discardcorrupt</code><br/><code>-flags low_delay -flags2 fast -max_delay 0</code></td>
+          <td>디코더 내부 버퍼링 최소화 및 손상 패킷 즉시 폐기.</td>
+        </tr>
+        <tr>
+          <td><code>FFmpeg</code></td>
+          <td><code>-probesize 32768 -analyzeduration 0 -threads 1</code></td>
+          <td>초기 스트림 분석 대기 시간 제거 및 싱글 스레드 저지연 디코딩.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>3.3 URL 지정 형식</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 28%;"><code>camera_url</code> 값</th>
+          <th>동작</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>scrcpy://usb</code> 또는 <code>scrcpy://back</code></td><td>연결된 Android USB 기기의 <strong>후면 카메라</strong> 사용</td></tr>
+        <tr><td><code>scrcpy://front</code></td><td>연결된 Android USB 기기의 <strong>전면 카메라</strong> 사용</td></tr>
+        <tr><td><code>scrcpy://id=0</code> (예: 0, 1, 2)</td><td>특정 카메라 렌즈 ID 지정 (초광각/망원 등 — <code>scrcpy --list-cameras</code>로 ID 조회)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout callout-ok">
+      <strong>안전한 리소스 정리 (<code>release()</code>):</strong>
+      연결 해제 시 TCP 소켓 종료 → <code>ffmpeg</code> 및 <code>adb shell</code> 프로세스 종료 →
+      <code>adb forward --remove tcp:27183</code> 순서로 정리하므로 재연결 시 포트 충돌이 발생하지 않습니다.
+    </div>
+  </section>
+
+  <!-- 4. 자동 회전 -->
+  <section id="auto-rotate" class="doc-section">
+    <h2>4. 실시간 자동 회전 감지 &amp; 세션 방향 잠금</h2>
+    <p>
+      Android 카메라 센서는 물리적으로 가로(<code>1280×720</code>) 방향으로 고정되어 있어, 폰을 세로로 세워도
+      원본 H.264 스트림은 가로로 들어옵니다. <code>ScrcpyUsbCapture</code>는 스트림을 끊지 않고
+      <strong>가속도 센서 폴링 + OpenCV 회전</strong>으로 이를 실시간 보정합니다.
+    </p>
+
+    <h3>4.1 가속도 센서 파싱 및 히스테리시스</h3>
+    <ul>
+      <li><code>_orientation_loop()</code> 스레드가 <strong>0.6초 주기</strong>로 <code>adb shell dumpsys sensorservice</code>를 조회합니다.</li>
+      <li><code>Linear Acceleration</code> 및 <code>Uncalibrated</code> 섹션은 건너뛰고, 실제 중력 가속도가 포함된 <code>Accelerometer: last N events</code> 블록의 <strong>가장 마지막(최신) 이벤트</strong> <code>(ax, ay, az)</code>를 읽습니다.</li>
+      <li>폰의 '자동 회전 잠금' 설정과 무관하게 물리적 기울기를 감지합니다.</li>
+      <li><strong>히스테리시스(떨림 방지):</strong> <code>max(|ax|, |ay|) &lt; 5.0</code> (책상 위에 평평하게 놓인 상태)이거나 우세 축이 반대 축의 <code>1.35배</code> 미만이면 직전 회전 각도를 그대로 유지합니다.</li>
+    </ul>
+
+    <table>
+      <thead>
+        <tr>
+          <th>폰 물리 자세</th>
+          <th>가속도 센서 조건</th>
+          <th>후면 카메라 회전</th>
+          <th>전면 카메라 회전</th>
+          <th>결과 해상도 (720p 기준)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>세로 정방향 (똑바로 세움)</td>
+          <td><code>ay ≥ +5.0</code>, <code>|ay| ≥ 1.35|ax|</code></td>
+          <td><code>90°</code> (<code>ROTATE_90_CLOCKWISE</code>)</td>
+          <td><code>270°</code> (<code>ROTATE_90_CCW</code>)</td>
+          <td><code>720 × 1280</code></td>
+        </tr>
+        <tr>
+          <td>세로 역방향 (거꾸로 세움)</td>
+          <td><code>ay ≤ -5.0</code>, <code>|ay| ≥ 1.35|ax|</code></td>
+          <td><code>270°</code> (<code>ROTATE_90_CCW</code>)</td>
+          <td><code>90°</code> (<code>ROTATE_90_CLOCKWISE</code>)</td>
+          <td><code>720 × 1280</code></td>
+        </tr>
+        <tr>
+          <td>가로 좌측 (상단이 왼쪽)</td>
+          <td><code>ax ≥ +5.0</code>, <code>|ax| ≥ 1.35|ay|</code></td>
+          <td><code>0°</code> (원본 유지)</td>
+          <td><code>0°</code> (원본 유지)</td>
+          <td><code>1280 × 720</code></td>
+        </tr>
+        <tr>
+          <td>가로 우측 (상단이 오른쪽)</td>
+          <td><code>ax ≤ -5.0</code>, <code>|ax| ≥ 1.35|ay|</code></td>
+          <td><code>180°</code> (<code>ROTATE_180</code>)</td>
+          <td><code>180°</code> (<code>ROTATE_180</code>)</td>
+          <td><code>1280 × 720</code></td>
+        </tr>
+        <tr>
+          <td>수평 놓임 / 애매한 각도</td>
+          <td><code>max(|ax|, |ay|) &lt; 5.0</code></td>
+          <td colspan="3">직전 회전 각도 유지 (화면 흔들림/플립 방지)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>4.2 측정 중 방향 잠금 (<code>set_orientation_lock</code>)</h3>
+    <div class="callout callout-warn">
+      <strong>왜 세션 중에는 방향을 잠글까?</strong><br/>
+      MP4 녹화(<code>cv2.VideoWriter</code>)는 첫 프레임 해상도로 고정되므로, 측정 도중 <code>1280×720 ↔ 720×1280</code>으로
+      해상도가 바뀌면 프레임 기록이 실패합니다. 따라서 아래와 같이 생애주기를 분리했습니다.
+    </div>
+    <ul>
+      <li><strong>대기 · 미리보기 중:</strong> <code>_orientation_locked = False</code> → 폰을 세우거나 눕히면 즉시 자동 회전.</li>
+      <li><strong>측정 시작 (<code>init_live_session()</code>):</strong> <code>camera.set_orientation_lock(True)</code> → 시작 시점의 가로/세로 방향 고정.</li>
+      <li><strong>측정 종료 (<code>stop_camera()</code>):</strong> <code>camera.set_orientation_lock(False)</code> → 카메라 연결은 유지한 채 자동 회전 즉시 복귀.</li>
+    </ul>
+
+    <h3>4.3 세로 영상 해상도 보존 (<code>compute_downscaled_size</code>)</h3>
+    <p>
+      720p 프리셋(<code>max_width=1280, max_height=720</code>)을 세로 영상(<code>720×1280</code>)에 그대로 적용하면
+      <code>406×720</code>으로 과도하게 축소되는 문제가 있었습니다. 이를 막기 위해 <code>height &gt; width</code>이고
+      <code>max_width &gt; max_height</code>인 경우 상한을 <code>(720, 1280)</code>으로 자동 스왑해 세로 720p 화질을 그대로 유지합니다.
+    </p>
+  </section>
+
+  <!-- 5. GoPro & DirectShow -->
+  <section id="gopro-dshow" class="doc-section">
+    <h2>5. GoPro USB &amp; DirectShow / IP 스트림</h2>
+
+    <h3>5.1 GoPro 전용 <code>FFmpegDShowCapture</code></h3>
+    <ul>
+      <li><strong>타임아웃 우회:</strong> GoPro Webcam 가상 카메라는 대기 로고에서 실영상으로 전환될 때 OpenCV <code>CAP_DSHOW</code>가 1초 타임아웃으로 1 FPS 검은 화면에 갇히는 문제가 있어, FFmpeg subprocess 파이프로 직접 수신합니다.</li>
+      <li><strong>풀화각 유지:</strong> GoPro DirectShow에 <code>1280×720</code>을 요청하면 1080p 중앙을 크롭하므로, 항상 <code>1920×1080</code>(<code>bgr0</code>) 풀화각으로 받은 뒤 FFmpeg 내부 <code>-vf scale</code>로 목표 해상도로 축소합니다.</li>
+      <li><strong>정상 종료:</strong> COM 필터 꼬임을 막기 위해 <code>release()</code> 시 <code>stdin</code>으로 <code>q\n</code>을 전송해 정상 종료합니다.</li>
+    </ul>
+
+    <h3>5.2 프록시 우회 (<code>configure_local_and_gopro_no_proxy</code>)</h3>
+    <p>
+      병원/사내 HTTP 프록시 환경에서 로컬 WebSocket(<code>127.0.0.1</code>)과 GoPro USB 이더넷(<code>172.20~29.x.51</code>)
+      통신이 차단되지 않도록 모듈 로드 시 <code>NO_PROXY</code>에 로컬 및 <code>172.16.0.0/12</code> 대역을 자동 추가하고,
+      <code>OPENCV_FFMPEG_CAPTURE_OPTIONS="overrun_nonfatal;1|fifo_size;50000000"</code>를 설정합니다.
+    </p>
+  </section>
+
+  <!-- 6. 미리보기 & 동적 창 크기 -->
+  <section id="preview-window" class="doc-section">
+    <h2>6. 미리보기 인코딩 &amp; 동적 OpenCV 창 크기</h2>
+
+    <h3>6.1 서버 측 미리보기 인코딩 (<code>encode_preview</code>)</h3>
+    <ul>
+      <li><code>PREVIEW_SIZE = (640, 360)</code>, <code>PREVIEW_FPS = 25</code>, <code>PREVIEW_JPEG_QUALITY = 55</code>.</li>
+      <li>세로 프레임(<code>height &gt; width</code>)이면 타겟 크기를 <code>(360, 640)</code>으로 스왑해 리사이즈한 뒤 <code>render_overlay()</code>로 23관절 스켈레톤과 우측 정보 패널을 합성합니다.</li>
+      <li>최종 JPEG 크기: 가로 기준 약 <code>813×360</code>, 세로 기준 약 <code>457×640</code> (우측 정보 패널 포함).</li>
+    </ul>
+
+    <h3>6.2 클라이언트 OpenCV 창 자동 리사이즈 (<code>VideoWindow._display</code>)</h3>
+    <p>
+      <code>streamlit_client/client/video_window.py</code>는 수신 프레임의 <code>orientation</code>(<code>portrait</code> vs <code>landscape</code>)이
+      바뀔 때마다 실제 이미지 비율(<code>img_w / img_h</code>)에 맞춰 <code>cv2.resizeWindow()</code>를 자동 호출합니다.
+    </p>
+    <pre><code>if orientation == "portrait":
+    win_h = 860
+    win_w = max(320, round(win_h * img_w / max(1, img_h)))   # 약 614 x 860
+else:
+    win_w = 1120
+    win_h = max(360, round(win_w * img_h / max(1, img_w)))   # 약 1120 x 496
+cv2.resizeWindow(title, win_w, win_h)</code></pre>
+  </section>
+
+  <!-- 7. WebSocket API -->
+  <section id="ws-protocol" class="doc-section">
+    <h2>7. WebSocket 카메라 진단 및 제어 프로토콜</h2>
+
+    <h3>7.1 카메라 진단 (<code>CMD_SCAN_CAMERAS</code> → <code>CAMERA_SCAN_RESULT</code>)</h3>
+    <pre><code>// Client -> Server
+{"type": "CMD_SCAN_CAMERAS", "max_index": 4}
+
+// Server -> Client
+{
+  "type": "CAMERA_SCAN_RESULT",
+  "cameras": [
+    {
+      "index": 0,
+      "name": "Integrated Camera",
+      "backend": "DSHOW",
+      "resolution": "1280x720",
+      "active": true,
+      "status_tag": "Active stream"
+    }
+  ],
+  "android_usb": {
+    "serial": "R3CX50FYKHV",
+    "state": "device"          // "device" | "unauthorized" (미연결 시 null)
+  },
+  "scrcpy_available": true,
+  "gopro_usb_ip": null,
+  "gopro_status": null
+}</code></pre>
+
+    <h3>7.2 카메라 연결 해제 (<code>CMD_DISCONNECT_CAMERA</code>)</h3>
+    <p>
+      평상시(<code>stop_camera(force=False)</code>)에는 다음 측정 시작 지연을 없애기 위해 카메라 연결을 유지합니다.
+      다른 앱에서 카메라를 쓰거나 연결을 초기화하고 싶을 때 Streamlit의 <strong>🔌 카메라 연결 끊기</strong> 버튼을 누르면
+      <code>CMD_DISCONNECT_CAMERA</code> → <code>stop_camera(force=True)</code>가 실행되어 스트림과 포워딩을 완전히 해제합니다.
+    </p>
+  </section>
+
+  <!-- 8. 설치 및 실행 -->
+  <section id="setup-env" class="doc-section">
+    <h2>8. 설치 · 바이너리 자동 탐색 · 실행</h2>
+
+    <h3>8.1 바이너리 탐색 경로 (새 터미널 없이 즉시 인식)</h3>
+    <p>
+      <code>winget</code> 설치 직후 현재 셸의 <code>PATH</code>가 아직 갱신되지 않았더라도 <code>camera.py</code>가 아래 경로를 순서대로 자동 탐색합니다.
+    </p>
+    <ul>
+      <li><strong>FFmpeg (<code>_find_ffmpeg_exe</code>):</strong> <code>PATH</code> → <code>socket_server/configs/bin/ffmpeg*</code> → <code>%LOCALAPPDATA%\Microsoft\WinGet\Links\ffmpeg.exe</code> → <code>%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg*\**\ffmpeg.exe</code></li>
+      <li><strong>scrcpy (<code>_find_scrcpy_exe</code>):</strong> <code>PATH</code> → <code>WinGet\Links\scrcpy.exe</code> → <code>socket_server/configs/bin/scrcpy.exe</code> → <code>tmp/scrcpy/scrcpy.exe</code> → <code>WinGet\Packages\Genymobile.scrcpy*\**\scrcpy.exe</code></li>
+      <li><strong>adb / scrcpy-server:</strong> 탐색된 <code>scrcpy.exe</code>와 같은 폴더에서 <code>adb.exe</code> 및 <code>scrcpy-server</code>를 자동 참조합니다.</li>
+    </ul>
+
+    <h3>8.2 관련 스크립트 요약</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 30%;">스크립트</th>
+          <th>역할</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>socket_server\setup.bat</code></td>
+          <td>Python 3.10(<code>rtm_env_50</code>) 기반 <code>.venv</code> 생성, ONNX Runtime CUDA 12 설치, <code>Gyan.FFmpeg</code> 및 <code>Genymobile.scrcpy</code> 자동 설치·검증, Android USB 상태 확인.</td>
+        </tr>
+        <tr>
+          <td><code>run_all.bat</code> (+ <code>run_all.py</code>)</td>
+          <td>단일 터미널에서 소켓 서버(<code>[SERVER]</code>)와 Streamlit 클라이언트(<code>[CLIENT]</code>)를 동시 실행. <strong><code>Ctrl+C</code> 한 번</strong>으로 두 프로세스 트리 일괄 종료.</td>
+        </tr>
+        <tr>
+          <td><code>tmp\setup_mobile_cam.bat</code><br/><code>tmp\run_mobile_cam_test.bat</code></td>
+          <td>서버 없이 Android USB / Wi-Fi / SRT / HTTP / Windows 카메라만 단독으로 빠르게 테스트하는 유틸리티.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 9. 트러블슈팅 -->
+  <section id="troubleshooting" class="doc-section">
+    <h2>9. 자주 발생하는 오류 해결</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 34%;">증상 / 오류 메시지</th>
+          <th>원인 및 해결 방법</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>device unauthorized</code> 또는 진단에 <code>승인 대기 중</code> 표시</td>
+          <td>스마트폰 화면 잠금을 해제하고 <strong>"USB 디버깅을 허용하시겠습니까?"</strong> 팝업에서 <strong>항상 허용</strong>을 선택하세요.</td>
+        </tr>
+        <tr>
+          <td><code>scrcpy 또는 ffmpeg를 찾을 수 없습니다</code></td>
+          <td><code>.\socket_server\setup.bat</code>를 실행하거나 PowerShell에서 <code>winget install Genymobile.scrcpy</code>, <code>winget install Gyan.FFmpeg</code>를 설치하세요.</td>
+        </tr>
+        <tr>
+          <td>세로로 세웠는데 창이 바로 안 돌아감</td>
+          <td>측정이 진행 중이면 녹화 보호를 위해 방향이 잠겨 있습니다. 측정 종료 후 대기/미리보기 상태에서 폰을 세우면 0.6초 이내에 자동 전환됩니다.</td>
+        </tr>
+        <tr>
+          <td>Streamlit <code>🔍 카메라 진단</code>에서 Android USB가 안 뜸</td>
+          <td>이전 코드로 켜져 있던 서버/클라이언트를 <code>Ctrl+C</code>로 종료하고 <code>.\run_all.bat</code>로 재시작한 뒤 다시 진단을 누르세요.</td>
+        </tr>
+        <tr>
+          <td>종료 후에도 카메라가 점유되어 있음</td>
+          <td><code>.\run_all.bat</code>에서 <code>Ctrl+C</code>로 종료하면 <code>taskkill /F /T</code>가 자식 프로세스까지 정리합니다. 실행 중에는 Streamlit의 <strong>🔌 카메라 연결 끊기</strong> 버튼을 사용하세요.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+  const input = document.getElementById("searchInput");
+  const sections = Array.from(document.querySelectorAll("section.doc-section"));
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    sections.forEach((sec) => {
+      const match = !q || sec.textContent.toLowerCase().includes(q);
+      sec.classList.toggle("hidden-by-search", !match);
+    });
+  });
+</script>
+</body>
+</html>
