@@ -1,0 +1,12 @@
+# ASAN Socket Server (COCO-23) - Pure ONNX Runtime (PyTorch / MMCV / MMPose 불필요)
+numpy==1.26.4
+opencv-python==4.9.0.80
+websockets==16.1.1
+onnxruntime-gpu>=1.23.0
+
+# PyTorch 없이 GPU(CUDA 12 + cuDNN 9) 가속을 사용하기 위한 경량 NVIDIA 런타임 DLL
+nvidia-cuda-runtime-cu12
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cufft-cu12
+nvidia-cuda-nvrtc-cu12

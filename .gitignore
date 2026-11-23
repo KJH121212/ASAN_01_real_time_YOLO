@@ -1,40 +1,22 @@
-# PyTorch 모델 파일
-# PyTorch·YOLO 가중치 파일을 Git 추적 대상에서 제외합니다.
+# PyTorch / YOLO / RTMPose / ONNX 가중치 및 바이너리
 *.pt
-# RTMPose 등 PyTorch 체크포인트를 Git 추적 대상에서 제외합니다.
 *.pth
+*.onnx
+onnx_export/.ultralytics_cfg/
+socket_server/configs/bin/
+streamlit_client/configs/bin/
 
-# exe 빌드 중 생성되는 임시 파일과 배포 산출물은 소스 저장소에서 제외합니다.
-/build/
-# 대형 AI 라이브러리·모델을 포함한 배포 폴더입니다.
-/dist/ASANSocketServer/
-# 빌드 명령이 자동 생성하는 PyInstaller 명세입니다.
-/ASANSocketServer.spec
-# 버전·환자·등록 차수별 IMU 및 카메라 원본 기록은 소스 저장소에서 제외합니다.
-/PatientData/
-
-# 로컬 가상환경 폴더
-# 로컬 가상환경 폴더를 제외합니다.
-env/
-
-# 파이썬 실행 캐시 찌꺼기 파일들
-# Python이 자동 생성하는 바이트코드 캐시 폴더를 제외합니다.
+# 파이썬 캐시 및 에디터 설정
 __pycache__/
-# Python이 자동 생성하는 컴파일 캐시 파일을 제외합니다.
 *.pyc
-# 개인 VS Code 편집기 설정을 제외합니다.
 .vscode/
-
-# OpenVINO 모델 변환 폴더 (아까 변환을 시도하셨다면)
-# OpenVINO로 변환한 모델 결과 폴더를 제외합니다.
-*_openvino_model/
-
-# 나중에 API 키 등을 저장할 때 쓸 환경 변수 파일
-# 로컬 환경 변수 파일을 제외합니다.
 .env
+env/
+.venv/
+socket_server/.venv/
+socket_server/.venv_onnx/
+streamlit_client/.venv/
 
-# data 통제
-# 환자별 로그·측정 영상 등 실행 데이터를 제외합니다.
+# 실행 데이터 및 분석 출력물
 data/
-analysis/outputs/
-analysis/tools/
+streamlit_client/analysis/outputs/
